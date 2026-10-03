@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   UserProfile, 
   NutritionGoals, 
@@ -9,8 +9,11 @@ import {
   MealAnalysisSuccessResponse,
   MealType 
 } from './types';
-import { StorageService, DEFAULT_PROFILE, DEFAULT_GOALS } from './services/storage';
+import { StorageService, DEFAULT_INITIAL_GOALS, DEFAULT_CLEAN_HABITS, createCleanProfile } from './services/storage';
 import { AuthService, AuthSessionUser } from './services/authService';
+import { DateService } from './services/dateService';
+import { MigrationService } from './services/migrationService';
+import { FirebaseStorageService } from './services/firestore/FirebaseStorageService';
 import { Header } from './components/Header';
 import { BottomNav, NavTab } from './components/BottomNav';
 import { HomeView } from './views/HomeView';
@@ -29,18 +32,20 @@ import { PrivacyModal } from './components/PrivacyModal';
 import { AuthModal } from './components/AuthModal';
 
 export default function App() {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const initialDate = DateService.getLocalDate();
 
   // User & Goals State
-  const [user, setUser] = useState<UserProfile>(() => StorageService.getProfile());
-  const [goals, setGoals] = useState<NutritionGoals>(() => StorageService.getGoals());
-  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(() => AuthService.getCurrentUser());
+  const [user, setUser] = useState<UserProfile>(() => createCleanProfile(currentUser?.uid || 'anonimo', currentUser?.displayName || 'Usuário'));
+  const [goals, setGoals] = useState<NutritionGoals>(DEFAULT_INITIAL_GOALS);
+  const [selectedDate, setSelectedDate] = useState<string>(initialDate);
 
-  // Daily logs for selected date
-  const [meals, setMeals] = useState<Meal[]>(() => StorageService.getMeals(selectedDate));
-  const [waterMl, setWaterMl] = useState<number>(() => StorageService.getWater(selectedDate));
-  const [habits, setHabits] = useState<HabitState>(() => StorageService.getHabits(selectedDate));
-  const [weights, setWeights] = useState<WeightLog[]>(() => StorageService.getWeights());
+  // Daily logs for selected date (Firestore as official source)
+  const [meals, setMeals] = useState<Meal[]>([]);
+  const [waterMl, setWaterMl] = useState<number>(0);
+  const [habits, setHabits] = useState<HabitState>(DEFAULT_CLEAN_HABITS);
+  const [weights, setWeights] = useState<WeightLog[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Navigation tab
   const [currentTab, setCurrentTab] = useState<NavTab>('home');
@@ -53,29 +58,6 @@ export default function App() {
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(() => AuthService.getCurrentUser());
-
-  // Listen to Auth State changes
-  useEffect(() => {
-    AuthService.init();
-    const unsub = AuthService.onAuthStateChanged(authUser => {
-      setCurrentUser(authUser);
-      if (authUser) {
-        const p = StorageService.getProfile();
-        if (p.uid !== authUser.uid) {
-          const updated = {
-            ...p,
-            uid: authUser.uid,
-            name: authUser.displayName || p.name,
-            email: authUser.email || undefined,
-          };
-          StorageService.saveProfile(updated);
-          setUser(updated);
-        }
-      }
-    });
-    return unsub;
-  }, []);
 
   // Human Correction Modal State
   const [correctionData, setCorrectionData] = useState<{
@@ -83,21 +65,76 @@ export default function App() {
     photoUrl?: string;
   } | null>(null);
 
-  // Refresh daily state when date changes
+  // Load all user data from Firestore
+  const loadUserData = useCallback(async (uid: string) => {
+    try {
+      setLoading(true);
+      // Run idempotent migration from legacy keys if exists
+      await MigrationService.migrateLocalDataToFirestore(uid);
+
+      const [loadedProfile, loadedGoals, loadedWeights] = await Promise.all([
+        StorageService.getProfile(),
+        StorageService.getGoals(),
+        StorageService.getWeights(),
+      ]);
+
+      setUser(loadedProfile);
+      setGoals(loadedGoals);
+      setWeights(loadedWeights);
+    } catch (err) {
+      console.error('[App] Erro ao carregar dados do usuário:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Load daily logs from Firestore for selected date
+  const loadDailyData = useCallback(async (date: string) => {
+    try {
+      const [loadedMeals, loadedWater, loadedHabits] = await Promise.all([
+        StorageService.getMeals(date),
+        StorageService.getWater(date),
+        StorageService.getHabits(date),
+      ]);
+      setMeals(loadedMeals);
+      setWaterMl(loadedWater);
+      setHabits(loadedHabits);
+    } catch (err) {
+      console.error('[App] Erro ao carregar dados diários:', err);
+    }
+  }, []);
+
+  // Listen to Auth State changes
   useEffect(() => {
-    setMeals(StorageService.getMeals(selectedDate));
-    setWaterMl(StorageService.getWater(selectedDate));
-    setHabits(StorageService.getHabits(selectedDate));
-  }, [selectedDate]);
+    AuthService.init();
+    const unsub = AuthService.onAuthStateChanged(authUser => {
+      setCurrentUser(authUser);
+      if (authUser) {
+        loadUserData(authUser.uid);
+      } else {
+        setUser(createCleanProfile('anonimo', 'Usuário'));
+        setMeals([]);
+        setWaterMl(0);
+        setWeights([]);
+        setLoading(false);
+      }
+    });
+    return unsub;
+  }, [loadUserData]);
+
+  // Refresh daily state when selected date changes
+  useEffect(() => {
+    loadDailyData(selectedDate);
+  }, [selectedDate, loadDailyData]);
 
   // Water handler
-  const handleAddWater = (delta: number) => {
-    const updated = StorageService.addWater(selectedDate, delta);
+  const handleAddWater = async (delta: number) => {
+    const updated = await StorageService.addWater(selectedDate, delta);
     setWaterMl(updated);
   };
 
   // Habit handler - 3 state cycle
-  const handleToggleHabit = (key: keyof HabitState) => {
+  const handleToggleHabit = async (key: keyof HabitState) => {
     const current = habits[key];
     const nextState: 'completed' | 'not_completed' | 'not_recorded' =
       current === 'not_recorded'
@@ -107,37 +144,45 @@ export default function App() {
         : 'not_recorded';
     const updated: HabitState = { ...habits, [key]: nextState };
     setHabits(updated);
-    StorageService.saveHabits(selectedDate, updated);
+    await StorageService.saveHabits(selectedDate, updated);
   };
 
   // Weight handler
-  const handleAddWeight = (weightKg: number, date: string, notes?: string) => {
-    StorageService.addWeight(weightKg, date, notes);
-    setWeights(StorageService.getWeights());
-    setUser(StorageService.getProfile());
+  const handleAddWeight = async (weightKg: number, date: string, notes?: string) => {
+    await StorageService.addWeight(weightKg, date, notes);
+    const updatedWeights = await StorageService.getWeights();
+    const updatedProfile = await StorageService.getProfile();
+    setWeights(updatedWeights);
+    setUser(updatedProfile);
   };
 
   // Meal save handler (from Human Correction or Direct sources)
-  const handleSaveMeal = (meal: Meal) => {
-    const mealWithDate = {
+  const handleSaveMeal = async (meal: Meal) => {
+    const mealWithDate: Meal = {
       ...meal,
+      uid: user.uid,
       date: selectedDate,
+      timestamp: meal.timestamp || DateService.getLocalDateTime(),
+      updatedAt: DateService.getLocalDateTime(),
     };
-    StorageService.saveMeal(mealWithDate);
-    setMeals(StorageService.getMeals(selectedDate));
+    await StorageService.saveMeal(mealWithDate);
+    const updatedMeals = await StorageService.getMeals(selectedDate);
+    setMeals(updatedMeals);
     setCorrectionData(null);
   };
 
   // Meal deletion handler
-  const handleDeleteMeal = (id: string) => {
-    StorageService.deleteMeal(id);
-    setMeals(StorageService.getMeals(selectedDate));
+  const handleDeleteMeal = async (id: string) => {
+    await StorageService.deleteMeal(id);
+    const updatedMeals = await StorageService.getMeals(selectedDate);
+    setMeals(updatedMeals);
   };
 
   // Meal duplication handler
-  const handleDuplicateMeal = (id: string) => {
-    StorageService.duplicateMeal(id);
-    setMeals(StorageService.getMeals(selectedDate));
+  const handleDuplicateMeal = async (id: string) => {
+    await StorageService.duplicateMeal(id);
+    const updatedMeals = await StorageService.getMeals(selectedDate);
+    setMeals(updatedMeals);
   };
 
   // Meal edit handler
@@ -167,15 +212,29 @@ export default function App() {
     });
   };
 
-  // Handler when photo analysis completes -> route to Human Correction if success
-  const handlePhotoAnalysisComplete = (data: MealAnalysisResponse, photoUrl?: string) => {
+  // Handler when photo analysis completes -> Upload to Storage & route to Human Correction
+  const handlePhotoAnalysisComplete = async (data: MealAnalysisResponse, capturedPhotoUrl?: string) => {
     setPhotoModalOpen(false);
-    if (data.success) {
-      setCorrectionData({ data, photoUrl });
+    if (!data.success) return;
+
+    let finalPhotoUrl = capturedPhotoUrl;
+    if (capturedPhotoUrl && user.uid) {
+      try {
+        const uploadResult = await FirebaseStorageService.uploadMealPhoto(
+          user.uid,
+          'meal_' + Date.now(),
+          capturedPhotoUrl
+        );
+        finalPhotoUrl = uploadResult.downloadUrl;
+      } catch (err) {
+        console.warn('[App] Upload Storage falhou, mantendo URL:', err);
+      }
     }
+
+    setCorrectionData({ data, photoUrl: finalPhotoUrl });
   };
 
-  // Handler when voice analysis completes -> route to Human Correction if success
+  // Handler when voice analysis completes
   const handleVoiceAnalysisComplete = (data: MealAnalysisResponse) => {
     setVoiceModalOpen(false);
     if (data.success) {
@@ -183,7 +242,7 @@ export default function App() {
     }
   };
 
-  // Handler when text analysis completes -> route to Human Correction if success
+  // Handler when text analysis completes
   const handleTextAnalysisComplete = (data: MealAnalysisResponse) => {
     setTextModalOpen(false);
     if (data.success) {
@@ -205,52 +264,52 @@ export default function App() {
   };
 
   // Onboarding completion
-  const handleOnboardingComplete = (
+  const handleOnboardingComplete = async (
     profileData: Partial<UserProfile>,
     goalsData?: Partial<NutritionGoals>
   ) => {
     const updatedProfile = { ...user, ...profileData, onboardingCompleted: true };
-    StorageService.saveProfile(updatedProfile);
+    await StorageService.saveProfile(updatedProfile);
     setUser(updatedProfile);
 
     if (goalsData) {
       const updatedGoals = { ...goals, ...goalsData };
-      StorageService.saveGoals(updatedGoals);
+      await StorageService.saveGoals(updatedGoals);
       setGoals(updatedGoals);
     }
   };
 
   // Restart onboarding
-  const handleRestartOnboarding = () => {
+  const handleRestartOnboarding = async () => {
     const updated = { ...user, onboardingCompleted: false };
     setUser(updated);
-    StorageService.saveProfile(updated);
+    await StorageService.saveProfile(updated);
   };
 
   // Profile update
-  const handleUpdateProfile = (newProfile: UserProfile) => {
-    StorageService.saveProfile(newProfile);
+  const handleUpdateProfile = async (newProfile: UserProfile) => {
+    await StorageService.saveProfile(newProfile);
     setUser(newProfile);
   };
 
   // Goals update
-  const handleUpdateGoals = (newGoals: NutritionGoals) => {
-    StorageService.saveGoals(newGoals);
+  const handleUpdateGoals = async (newGoals: NutritionGoals) => {
+    await StorageService.saveGoals(newGoals);
     setGoals(newGoals);
   };
 
   // Reset all data
   const handleDataReset = () => {
-    setUser(DEFAULT_PROFILE);
-    setGoals(DEFAULT_GOALS);
-    setMeals(StorageService.getMeals(selectedDate));
-    setWaterMl(StorageService.getWater(selectedDate));
-    setHabits(StorageService.getHabits(selectedDate));
-    setWeights(StorageService.getWeights());
+    setUser(createCleanProfile(currentUser?.uid || 'anonimo', currentUser?.displayName || 'Usuário'));
+    setGoals(DEFAULT_INITIAL_GOALS);
+    setMeals([]);
+    setWaterMl(0);
+    setHabits(DEFAULT_CLEAN_HABITS);
+    setWeights([]);
   };
 
-  // Show onboarding if not yet completed
-  if (!user.onboardingCompleted) {
+  // Show onboarding if user profile onboarding is not yet completed
+  if (!user.onboardingCompleted && !loading) {
     return <OnboardingView onComplete={handleOnboardingComplete} />;
   }
 

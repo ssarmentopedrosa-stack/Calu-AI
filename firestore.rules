@@ -11,60 +11,71 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny for all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     // User profile and subcollections
     match /users/{userId} {
       allow read, write: if isOwner(userId);
 
       // Meals subcollection
       match /meals/{mealId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if isOwner(userId) && isValidId(mealId);
       }
 
       // Weight logs subcollection
       match /weightLogs/{weightId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if isOwner(userId) && isValidId(weightId);
       }
 
       // Water logs subcollection
       match /waterLogs/{waterId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if isOwner(userId) && isValidId(waterId);
       }
 
       // Habits subcollection
-      match /habits/{habitId} {
-        allow read, write: if isOwner(userId);
+      match /habits/{date} {
+        allow read, write: if isOwner(userId) && isValidId(date);
       }
 
       // Calu AI memories subcollection
       match /memories/{memoryId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if isOwner(userId) && isValidId(memoryId);
       }
 
       // AI Chat messages subcollection
       match /chatMessages/{messageId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if isOwner(userId) && isValidId(messageId);
       }
 
-      // AI Usage subcollection (read-only for user, written by backend/admin)
+      // AI Usage subcollection (Strictly server-side authoritative)
       match /aiUsage/{date} {
         allow read: if isOwner(userId);
-        allow write: if false; // Only server/cloud functions can write usage counters
+        allow write: if false; // Only Firebase Admin SDK can write usage counters
       }
 
       // Preferences and profile document
       match /preferences/{docId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        // Client SDK cannot elevate own account to premium directly
+        allow create, update: if isOwner(userId) && (
+          !('plan' in request.resource.data) ||
+          request.resource.data.plan == 'free' ||
+          (resource != null && resource.data.plan == request.resource.data.plan)
+        );
+        allow delete: if isOwner(userId);
       }
 
       // Goals document
       match /goals/{docId} {
         allow read, write: if isOwner(userId);
       }
-    }
-
-    // Default deny for all other collections
-    match /{document=**} {
-      allow read, write: if false;
     }
   }
 }

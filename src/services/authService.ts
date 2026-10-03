@@ -6,7 +6,7 @@ import {
   onAuthStateChanged,
   deleteUser,
   updateProfile,
-  User as FirebaseUser,
+  sendPasswordResetEmail,
 } from 'firebase/auth';
 import { auth, googleProvider, isFirebaseConfigured } from './firebase';
 
@@ -19,12 +19,18 @@ export interface AuthSessionUser {
 }
 
 const LOCAL_SESSION_KEY = 'calu_auth_local_session_v2';
+const isProduction = import.meta.env.PROD;
+const isDemoModeExplicit = import.meta.env.VITE_DEMO_MODE === 'true';
 
 export class AuthService {
   private static currentUser: AuthSessionUser | null = null;
   private static listeners: Array<(user: AuthSessionUser | null) => void> = [];
+  private static initialized = false;
 
   static init() {
+    if (this.initialized) return;
+    this.initialized = true;
+
     if (isFirebaseConfigured) {
       onAuthStateChanged(auth, async fbUser => {
         if (fbUser) {
@@ -41,31 +47,36 @@ export class AuthService {
         this.notifyListeners();
       });
     } else {
-      // Offline/Local Development mode with persistent real UID
-      try {
-        const saved = localStorage.getItem(LOCAL_SESSION_KEY);
-        if (saved) {
-          this.currentUser = JSON.parse(saved);
-        } else {
-          // Create initial local user with real unique UID
-          const localUid = 'usr_' + Math.random().toString(36).substring(2, 10);
-          this.currentUser = {
-            uid: localUid,
-            email: 'usuario.local@calu.ai',
-            displayName: 'Usuário Calu',
-            photoURL: null,
-            isAnonymous: false,
-          };
-          localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(this.currentUser));
+      // In production, fake authentication is strictly forbidden (Anti-bypass)
+      if (isProduction) {
+        console.error('[AuthService] Firebase não configurado em ambiente de produção.');
+        this.currentUser = null;
+        this.notifyListeners();
+        return;
+      }
+
+      // In local dev ONLY when demo mode is explicit
+      if (isDemoModeExplicit) {
+        try {
+          const saved = localStorage.getItem(LOCAL_SESSION_KEY);
+          if (saved) {
+            this.currentUser = JSON.parse(saved);
+          } else {
+            const devUid = 'demo_user_authenticated_dev';
+            this.currentUser = {
+              uid: devUid,
+              email: 'demo@calu.ai',
+              displayName: 'Usuário Demonstração',
+              photoURL: null,
+              isAnonymous: false,
+            };
+            localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(this.currentUser));
+          }
+        } catch {
+          this.currentUser = null;
         }
-      } catch {
-        this.currentUser = {
-          uid: 'usr_default_local',
-          email: null,
-          displayName: 'Usuário',
-          photoURL: null,
-          isAnonymous: false,
-        };
+      } else {
+        this.currentUser = null;
       }
       this.notifyListeners();
     }
@@ -93,12 +104,21 @@ export class AuthService {
     return this.currentUser;
   }
 
-  static async getIdToken(): Promise<string | null> {
+  static async getIdToken(forceRefresh = false): Promise<string | null> {
     if (isFirebaseConfigured && auth.currentUser) {
-      return await auth.currentUser.getIdToken();
+      return await auth.currentUser.getIdToken(forceRefresh);
     }
-    // For local development, return simulated secure token carrying UID
-    return this.currentUser ? `local_dev_token_${this.currentUser.uid}` : null;
+
+    // In production, never return mock tokens
+    if (isProduction) {
+      return null;
+    }
+
+    if (isDemoModeExplicit && this.currentUser) {
+      return 'demo_dev_token';
+    }
+
+    return null;
   }
 
   static async signInWithGoogle(): Promise<AuthSessionUser> {
@@ -116,11 +136,18 @@ export class AuthService {
       return user;
     }
 
-    // Local fallback
+    if (isProduction) {
+      throw new Error('Firebase Authentication não está configurado neste ambiente.');
+    }
+
+    if (!isDemoModeExplicit) {
+      throw new Error('Configure o Firebase para habilitar login com Google.');
+    }
+
     const user: AuthSessionUser = {
-      uid: 'google_' + Math.random().toString(36).substring(2, 10),
-      email: 'usuario.google@exemplo.com',
-      displayName: 'Usuário Google',
+      uid: 'demo_user_authenticated_dev',
+      email: 'demo@calu.ai',
+      displayName: 'Usuário Demonstração',
       photoURL: null,
       isAnonymous: false,
     };
@@ -145,9 +172,16 @@ export class AuthService {
       return user;
     }
 
-    // Local fallback
+    if (isProduction) {
+      throw new Error('Firebase Authentication não está configurado.');
+    }
+
+    if (!isDemoModeExplicit) {
+      throw new Error('Configure o Firebase para habilitar login com e-mail.');
+    }
+
     const user: AuthSessionUser = {
-      uid: 'email_' + Math.random().toString(36).substring(2, 10),
+      uid: 'demo_user_authenticated_dev',
       email,
       displayName: email.split('@')[0],
       photoURL: null,
@@ -177,9 +211,16 @@ export class AuthService {
       return user;
     }
 
-    // Local fallback
+    if (isProduction) {
+      throw new Error('Firebase Authentication não está configurado.');
+    }
+
+    if (!isDemoModeExplicit) {
+      throw new Error('Configure o Firebase para habilitar cadastro.');
+    }
+
     const user: AuthSessionUser = {
-      uid: 'acc_' + Math.random().toString(36).substring(2, 10),
+      uid: 'demo_user_authenticated_dev',
       email,
       displayName: displayName || email.split('@')[0],
       photoURL: null,
@@ -189,6 +230,14 @@ export class AuthService {
     localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(user));
     this.notifyListeners();
     return user;
+  }
+
+  static async sendPasswordReset(email: string): Promise<void> {
+    if (isFirebaseConfigured) {
+      await sendPasswordResetEmail(auth, email);
+    } else {
+      throw new Error('Firebase Authentication não configurado.');
+    }
   }
 
   static async signOut(): Promise<void> {
@@ -201,9 +250,26 @@ export class AuthService {
   }
 
   static async deleteAccount(): Promise<void> {
+    // Also trigger server-side cascade
+    const token = await this.getIdToken();
+    if (token) {
+      try {
+        await fetch('/api/user/delete-account', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+      } catch (err: any) {
+        console.warn('Erro na exclusão server-side:', err.message);
+      }
+    }
+
     if (isFirebaseConfigured && auth.currentUser) {
       await deleteUser(auth.currentUser);
     }
+
     this.currentUser = null;
     localStorage.removeItem(LOCAL_SESSION_KEY);
     this.notifyListeners();

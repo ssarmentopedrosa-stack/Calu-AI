@@ -1,32 +1,54 @@
+import { BRAZILIAN_TIMEZONE } from '../config/constants';
+
 /**
- * DateService handles local Brazilian and device timezone operations
- * preventing UTC day shifts (e.g. evening meals being logged into next day).
+ * DateService strictly operates in America/Sao_Paulo timezone,
+ * preventing UTC day shifts (e.g. evening meals at 22h being logged into the next day).
+ * Works identically in Node.js server environments and client browsers.
  */
 export class DateService {
+  private static readonly TIMEZONE = BRAZILIAN_TIMEZONE || 'America/Sao_Paulo';
+
   /**
-   * Returns YYYY-MM-DD in the user's local timezone (or provided date)
+   * Returns YYYY-MM-DD in America/Sao_Paulo timezone
    */
   static getLocalDate(date: Date = new Date()): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(date);
   }
 
   /**
-   * Returns HH:mm in local time
+   * Returns HH:mm in America/Sao_Paulo timezone
    */
   static getLocalTime(date: Date = new Date()): string {
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    return `${hours}:${minutes}`;
+    const formatter = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: this.TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    return formatter.format(date);
   }
 
   /**
-   * Returns ISO local timestamp representation without UTC shift
+   * Returns ISO local timestamp representation (YYYY-MM-DDTHH:mm:ss) in America/Sao_Paulo
    */
   static getLocalDateTime(date: Date = new Date()): string {
-    return `${this.getLocalDate(date)}T${this.getLocalTime(date)}:00`;
+    const datePart = this.getLocalDate(date);
+    const timePart = this.getLocalTime(date);
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${datePart}T${timePart}:${seconds}`;
+  }
+
+  /**
+   * Checks if a given YYYY-MM-DD string is today in America/Sao_Paulo
+   */
+  static isToday(dateStr: string): boolean {
+    return dateStr === this.getLocalDate();
   }
 
   /**
@@ -44,8 +66,10 @@ export class DateService {
     const [year, month, day] = dateStr.split('-').map(Number);
     if (!year || !month || !day) return dateStr;
 
-    const d = new Date(year, month - 1, day);
+    // Use noon to avoid any boundary issues
+    const d = new Date(year, month - 1, day, 12, 0, 0);
     return d.toLocaleDateString('pt-BR', {
+      timeZone: this.TIMEZONE,
       weekday: 'short',
       day: 'numeric',
       month: 'short',
@@ -53,18 +77,18 @@ export class DateService {
   }
 
   /**
-   * Returns Start of Local Day (00:00:00)
+   * Returns Start of Local Day (00:00:00) in America/Sao_Paulo
    */
   static startOfLocalDay(dateStr: string): Date {
     const [year, month, day] = dateStr.split('-').map(Number);
-    return new Date(year, month - 1, day, 0, 0, 0, 0);
+    return new Date(Date.UTC(year, month - 1, day, 3, 0, 0)); // UTC-3 midnight
   }
 
   /**
-   * Returns End of Local Day (23:59:59.999)
+   * Returns End of Local Day (23:59:59.999) in America/Sao_Paulo
    */
   static endOfLocalDay(dateStr: string): Date {
     const [year, month, day] = dateStr.split('-').map(Number);
-    return new Date(year, month - 1, day, 23, 59, 59, 999);
+    return new Date(Date.UTC(year, month - 1, day + 1, 2, 59, 59, 999));
   }
 }

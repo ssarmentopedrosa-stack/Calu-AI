@@ -19,13 +19,13 @@ export class CaluApiService {
     return headers;
   }
 
-  static async checkHealth(): Promise<{ status: string; version: string; environment: string }> {
+  static async checkHealth(): Promise<{ status: string; version: string; environment: string; firebaseAdminReady: boolean }> {
     try {
       const res = await fetch('/api/health');
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.0.0', environment: 'local' };
+      return { status: 'offline', version: '2.1.0', environment: 'local', firebaseAdminReady: false };
     }
   }
 
@@ -45,8 +45,8 @@ export class CaluApiService {
     if (!res.ok || data.success === false) {
       return {
         success: false,
-        errorCode: data.errorCode || 'AI_ANALYSIS_FAILED',
-        message: data.message || 'Não consegui analisar essa refeição com segurança.',
+        errorCode: data.error?.code || data.errorCode || 'AI_ANALYSIS_FAILED',
+        message: data.error?.message || data.message || 'Não consegui analisar essa refeição com segurança.',
       };
     }
 
@@ -65,8 +65,8 @@ export class CaluApiService {
     if (!res.ok || data.success === false) {
       return {
         success: false,
-        errorCode: data.errorCode || 'AI_ANALYSIS_FAILED',
-        message: data.message || 'Não foi possível analisar a descrição fornecida.',
+        errorCode: data.error?.code || data.errorCode || 'AI_ANALYSIS_FAILED',
+        message: data.error?.message || data.message || 'Não foi possível analisar a descrição fornecida.',
       };
     }
 
@@ -74,46 +74,66 @@ export class CaluApiService {
   }
 
   static async getDailyInsight(
-    meals: Meal[],
-    targets: NutritionGoals,
-    habits: HabitState
+    _meals?: Meal[],
+    _targets?: NutritionGoals,
+    _habits?: HabitState
   ): Promise<string> {
     try {
       const headers = await this.getAuthHeaders();
       const res = await fetch('/api/daily-insight', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ meals, targets, habits }),
+        body: JSON.stringify({}), // Server reconstructs factual context directly from Firestore
       });
       if (!res.ok) throw new Error('Insight API error');
       const data = await res.json();
       return data.insight || 'Acompanhar seu dia com regularidade ajuda a construir mais clareza sobre suas escolhas alimentares.';
     } catch {
-      return 'Seu ritmo de acompanhamento está ótimo! Manter o diário consistente é o primeiro passo para compreender seus sinais de fome e energia.';
+      return 'Não foi possível gerar seu insight agora. Tente novamente mais tarde.';
     }
   }
 
   static async chatWithCalu(
     messages: ChatMessage[],
-    userContext: any
+    _clientContext?: any
   ): Promise<string> {
     try {
       const headers = await this.getAuthHeaders();
       const res = await fetch('/api/chat-calu', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ messages, userContext }),
+        body: JSON.stringify({ messages }), // Server reconstructs context directly from Firestore
       });
       if (!res.ok) throw new Error('Chat API error');
       const data = await res.json();
       return data.reply;
     } catch {
-      return 'Tive uma breve oscilação de conexão, mas estou pronta para te apoiar. O que você gostaria de planejar?';
+      return 'Tive uma breve oscilação de conexão, por favor tente enviar sua mensagem novamente.';
     }
   }
 
   static async lookupBarcode(barcode: string): Promise<any> {
     const res = await fetch(`/api/barcode/${encodeURIComponent(barcode)}`);
     return await res.json();
+  }
+
+  static async exportUserData(): Promise<any> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/user/export-data', {
+      method: 'GET',
+      headers,
+    });
+    if (!res.ok) throw new Error('Falha ao exportar dados da conta.');
+    const data = await res.json();
+    return data.data;
+  }
+
+  static async deleteAccount(): Promise<void> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/user/delete-account', {
+      method: 'POST',
+      headers,
+    });
+    if (!res.ok) throw new Error('Falha ao processar exclusão completa no servidor.');
   }
 }

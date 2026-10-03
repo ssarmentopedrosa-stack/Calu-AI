@@ -1,6 +1,8 @@
-import React from 'react';
-import { ShieldCheck, Download, Trash2, X, Lock, FileText, CheckCircle2 } from 'lucide-react';
-import { StorageService } from '../services/storage';
+import React, { useState } from 'react';
+import { ShieldCheck, Download, Trash2, X, Lock, CheckCircle2, AlertCircle } from 'lucide-react';
+import { CaluApiService } from '../services/api';
+import { AuthService } from '../services/authService';
+import { DateService } from '../services/dateService';
 
 interface PrivacyModalProps {
   onClose: () => void;
@@ -8,26 +10,47 @@ interface PrivacyModalProps {
 }
 
 export const PrivacyModal: React.FC<PrivacyModalProps> = ({ onClose, onDataReset }) => {
-  const handleExport = () => {
-    const jsonStr = StorageService.exportAllData();
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `calu_ai_meus_dados_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    try {
+      setLoading(true);
+      setMessage('Gerando arquivo de exportação oficial...');
+      const data = await CaluApiService.exportUserData();
+      const jsonStr = JSON.stringify(data, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `calu_ai_meus_dados_${DateService.getLocalDate()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage('Exportação concluída com sucesso!');
+    } catch {
+      setMessage('Não foi possível gerar a exportação online.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDeleteAll = () => {
+  const handleDeleteAll = async () => {
     if (
       confirm(
-        'Tem certeza que deseja apagar todos os seus registros, diário e perfil? Esta ação é definitiva em conformidade com a LGPD.'
+        'Tem certeza que deseja apagar permanentemente todos os seus dados, diário, refeições e conta? Esta ação é definitiva e irreversível em conformidade com a LGPD.'
       )
     ) {
-      StorageService.clearAllData();
-      onDataReset();
-      onClose();
+      try {
+        setLoading(true);
+        setMessage('Excluindo conta e dados no servidor...');
+        await AuthService.deleteAccount();
+        onDataReset();
+        onClose();
+      } catch (err: any) {
+        setMessage('Erro ao processar exclusão: ' + (err.message || 'Tente novamente.'));
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -55,6 +78,13 @@ export const PrivacyModal: React.FC<PrivacyModalProps> = ({ onClose, onDataReset
 
         {/* Content */}
         <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-300 leading-relaxed">
+          {message && (
+            <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl text-xs text-orange-400 flex items-center gap-2">
+              <AlertCircle size={15} />
+              <span>{message}</span>
+            </div>
+          )}
+
           {/* Clinical Safety Notice */}
           <div className="p-3.5 bg-slate-800/80 border border-slate-700/80 rounded-2xl space-y-1.5">
             <h4 className="font-bold text-slate-100 flex items-center gap-1.5 text-xs">
@@ -83,17 +113,19 @@ export const PrivacyModal: React.FC<PrivacyModalProps> = ({ onClose, onDataReset
           <div className="pt-2 space-y-2">
             <button
               type="button"
+              disabled={loading}
               onClick={handleExport}
-              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors"
+              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
             >
               <Download size={15} className="text-orange-400" />
-              <span>Exportar Meus Dados em JSON</span>
+              <span>Exportar Meus Dados Oficiais em JSON</span>
             </button>
 
             <button
               type="button"
+              disabled={loading}
               onClick={handleDeleteAll}
-              className="w-full py-2.5 px-4 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors"
+              className="w-full py-2.5 px-4 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
             >
               <Trash2 size={15} />
               <span>Excluir Minha Conta e Histórico Completo</span>

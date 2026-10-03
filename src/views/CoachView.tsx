@@ -13,6 +13,7 @@ import { CaluMascot } from '../components/CaluMascot';
 import { CaluApiService } from '../services/api';
 import { repository } from '../repositories/dataRepository';
 import { DateService } from '../services/dateService';
+import { ChatService } from '../services/firestore/ChatService';
 
 interface CoachViewProps {
   user: UserProfile;
@@ -44,9 +45,15 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Load user memories from repository on mount
+  // Load user memories and chat history from Firestore on mount
   useEffect(() => {
+    if (!user.uid) return;
     repository.getMemories(user.uid).then(setMemories);
+    ChatService.getChatMessages(user.uid).then(stored => {
+      if (stored && stored.length > 0) {
+        setMessages(stored);
+      }
+    });
   }, [user.uid]);
 
   const scrollToBottom = () => {
@@ -81,6 +88,11 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
     setInputText('');
     setIsSending(true);
 
+    // Persist user message to Firestore
+    if (user.uid) {
+      await ChatService.saveChatMessage(user.uid, userMsg);
+    }
+
     try {
       const userContext = {
         name: user.name,
@@ -104,6 +116,11 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
       };
 
       setMessages([...updatedMessages, caluMsg]);
+
+      // Persist assistant message to Firestore
+      if (user.uid) {
+        await ChatService.saveChatMessage(user.uid, caluMsg);
+      }
     } catch {
       const fallbackMsg: ChatMessage = {
         id: 'msg_err_' + Date.now(),

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { CaluMascot } from '../components/CaluMascot';
 import { Camera, Sparkles, Sliders, ArrowRight, Check } from 'lucide-react';
 import { UserProfile, NutritionGoals } from '../types';
+import { AuthService } from '../services/authService';
 
 interface OnboardingViewProps {
   onComplete: (profile: Partial<UserProfile>, goals?: Partial<NutritionGoals>) => void;
@@ -47,7 +48,9 @@ export const OnboardingView: React.FC<OnboardingViewProps> = ({ onComplete }) =>
   const [showProfileSetup, setShowProfileSetup] = useState(false);
 
   // Quick user setup state
-  const [userName, setUserName] = useState('Camila');
+  const [userName, setUserName] = useState(
+    () => AuthService.getCurrentUser()?.displayName || ''
+  );
   const [userGoal, setUserGoal] = useState<UserProfile['goal']>('melhorar_habitos');
   const [userActivity, setUserActivity] = useState<UserProfile['activityLevel']>('moderado');
 

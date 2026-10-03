@@ -9,7 +9,12 @@ import { fileURLToPath } from 'url';
 import { BRAZILIAN_BARCODES } from './src/data/barcodeDatabase.ts';
 import { NutritionService } from './src/services/nutritionService.ts';
 import { NutritionCalculator } from './src/services/nutritionCalculator.ts';
-import { AI_LIMITS, APP_VERSION } from './src/config/constants.ts';
+import { APP_VERSION } from './src/config/constants.ts';
+import { DateService } from './src/services/dateService.ts';
+import { initFirebaseAdmin, getAdminAuth, getAdminDb, getAdminStorage, isFirebaseAdminReady } from './server/firebaseAdmin.ts';
+import { requireAuth, AuthenticatedRequest } from './server/middleware/requireAuth.ts';
+import { ServerAIUsageService } from './server/services/aiUsageService.ts';
+import { ServerUserContextService } from './server/services/userContextService.ts';
 
 dotenv.config();
 
@@ -19,10 +24,13 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const app = express();
 
-// 1. Security Headers via Helmet (with permissive img/media for camera & previews)
+// Initialize Firebase Admin SDK
+initFirebaseAdmin();
+
+// 1. Security Headers via Helmet
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Vite and local camera previews require relaxed CSP in dev
+    contentSecurityPolicy: false, // Vite dev server and camera previews require relaxed CSP
     crossOriginEmbedderPolicy: false,
   })
 );
@@ -32,16 +40,17 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   process.env.APP_URL || '',
+  process.env.WEB_APP_URL || '',
 ].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, etc.)
+      // Allow requests with no origin (mobile apps, capacitor, curl, server-to-server)
       if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
         return callback(null, true);
       }
-      return callback(new Error('Acesso não permitido por CORS'));
+      return callback(new Error('Acesso não permitido por política de CORS'));
     },
     credentials: true,
   })
@@ -57,7 +66,7 @@ Sua missão é ajudar o usuário a registrar, compreender e acompanhar seus háb
 
 DIRETRIZES FUNDAMENTAIS:
 1. Seja acolhedora, simpática, objetiva, curiosa e NUNCA julgadora.
-2. NUNCA diga frases como "Você errou", "Você comeu demais", "Você estragou a dieta". Em vez disso, prefira: "Hoje seu consumo ficou um pouco acima da meta estimada. Vamos observar como seu corpo se comporta ao longo da semana."
+2. NUNCA diga frases punitivas ou de culpa ("Você errou", "Você comeu demais", "Você estragou a dieta"). Em vez disso, prefira: "Hoje seu consumo ficou um pouco acima da meta estimada. Vamos observar como seu corpo se comporta ao longo da semana."
 3. SEGURANÇA CLÍNICA RIGOROSA:
    - Você NÃO é médica e NÃO é nutricionista.
    - NUNCA diagnostique doenças, transtornos alimentares ou prescreva medicamentos/dietas terapêuticas.
@@ -67,14 +76,14 @@ DIRETRIZES FUNDAMENTAIS:
    - Compreenda pratos do dia a dia do brasileiro: Arroz e Feijão, PF (Prato Feito), Cuscuz, Tapioca, Macaxeira/Mandioca, Farofa, Açaí, Bife acebolado, Marmita, etc.
    - Respeite unidades usuais: colher de sopa, colher de servir, concha, xícara, copo, fatia, gramas (g) e ml.
 5. ESTIMATIVAS E TRANSPARÊNCIA:
-   - Identifique apenas o que for visível com razoável clareza. Não invente alimentos.
+   - Identifique apenas o que for visível com razoável clareza. NÃO invente alimentos sob nenhuma hipótese.
 `;
 
 // AI Provider Interface
 export interface AIProvider {
   analyzeMealImage(base64Image: string, mimeType: string, userNotes?: string): Promise<any>;
   analyzeMealText(text: string, userNotes?: string): Promise<any>;
-  generateDailyInsight(meals: any[], targets: any, habits: any): Promise<string>;
+  generateDailyInsight(userContext: any): Promise<string>;
   chatWithCalu(messages: any[], userContext: any): Promise<string>;
 }
 
@@ -223,24 +232,24 @@ Retorne ESTRITAMENTE um objeto JSON no formato:
     return JSON.parse(raw);
   }
 
-  async generateDailyInsight(meals: any[], targets: any, habits: any): Promise<string> {
-    if (!meals || meals.length === 0) {
-      return 'Ainda não tenho dados suficientes sobre suas refeições de hoje. Assim que registrar seu primeiro prato ou copo d’água, trarei um insight acolhedor!';
-    }
-
+  async generateDailyInsight(userContext: any): Promise<string> {
     try {
       const ai = this.ensureClient();
       const prompt = `
-Com base nos dados alimentares reais de hoje do usuário no Brasil:
-Refeições registradas (${meals.length}): ${JSON.stringify(meals.map(m => ({ nome: m.name, calorias: m.totalCalories, p: m.totalProtein, c: m.totalCarbohydrates, g: m.totalFat, alimentos: m.foods?.map((f: any) => f.name) })))}
-Metas diárias: Calorias: ${targets?.calories || 2000} kcal, Proteína: ${targets?.protein || 120}g, Água: ${targets?.waterMl || 2500}ml
-Hábitos cumpridos: ${JSON.stringify(habits)}
+Com base nos dados alimentares reais de hoje reconstruídos no servidor para o usuário:
+- Nome: ${userContext?.name || 'Usuário'}
+- Refeições de hoje: ${userContext?.todayMealsSummary || 'Nenhuma refeição registrada'}
+- Calorias consumidas hoje: ${userContext?.consumedCalories || 0} kcal (Meta: ${userContext?.targetCalories || 2000} kcal)
+- Proteínas hoje: ${userContext?.consumedProtein || 0} g (Meta: ${userContext?.targetProtein || 120} g)
+- Água hoje: ${userContext?.waterConsumedMl || 0} ml (Meta: ${userContext?.waterTargetMl || 2500} ml)
+- Hábitos cumpridos hoje: ${userContext?.habitsSummary || 'Nenhum hábito registrado hoje'}
 
 Escreva um insight curto (2 a 3 frases no máximo), acolhedor e encorajador da Calu sobre o dia.
 DIRETRIZES:
 - Destaque um ponto positivo ou algo interessante observado no diário.
+- NUNCA invente refeições ou dados que não foram informados acima.
 - Nunca faça julgamentos de culpa ("Você comeu muito doce", "Você falhou").
-- Seja construtiva e humanizada.
+- Seja construtiva, empática e humanizada.
 `;
 
       const geminiPromise = ai.models.generateContent({
@@ -263,17 +272,22 @@ DIRETRIZES:
   async chatWithCalu(messages: any[], userContext: any): Promise<string> {
     try {
       const ai = this.ensureClient();
-      const formattedHistory = messages.map(m => `${m.sender === 'user' ? 'Usuário' : 'Calu'}: ${m.text}`).join('\n');
+      const formattedHistory = messages
+        .slice(-8)
+        .map(m => `${m.sender === 'user' ? 'Usuário' : 'Calu'}: ${m.text}`)
+        .join('\n');
 
       const prompt = `
-Contexto atual e real do usuário no app CALU AI:
+Contexto REAL do usuário reconstruído diretamente do Firestore:
 - Nome: ${userContext?.name || 'Amigo(a)'}
 - Objetivo: ${userContext?.goal || 'Acompanhar hábitos'}
 - Preferência alimentar: ${userContext?.dietaryPreference || 'Livre'}
 - Calorias consumidas hoje: ${userContext?.consumedCalories || 0} de ${userContext?.targetCalories || 2000} kcal
 - Proteínas hoje: ${userContext?.consumedProtein || 0} de ${userContext?.targetProtein || 120} g
-- Refeições já registradas hoje: ${userContext?.todayMealsSummary || 'Nenhuma refeição registrada ainda'}
-- Memórias e preferências registradas: ${userContext?.memories?.join('; ') || 'Nenhuma preferência personalizada'}
+- Refeições reais de hoje: ${userContext?.todayMealsSummary || 'Nenhuma refeição registrada ainda hoje'}
+- Água hoje: ${userContext?.waterConsumedMl || 0} ml
+- Hábitos de hoje: ${userContext?.habitsSummary || 'Sem registros de hábitos hoje'}
+- Memórias cadastradas: ${userContext?.memories?.join('; ') || 'Nenhuma preferência personalizada'}
 
 Histórico recente da conversa:
 ${formattedHistory}
@@ -300,7 +314,7 @@ Lembre-se: não dê diagnósticos médicos nem prescreva medicamentos.
   }
 }
 
-// GrokProvider abstraction prepared
+// GrokProvider abstraction (disabled if not configured)
 class GrokProvider implements AIProvider {
   async analyzeMealImage(): Promise<any> {
     throw new Error('PROVIDER_NOT_CONFIGURED');
@@ -324,93 +338,9 @@ function getAIProvider(): AIProvider {
 
 const aiProvider = getAIProvider();
 
-// Server-side AI Usage Tracker (Section 16: Centralized limits, protected from client manipulation)
-const aiUsageStore: Record<string, Record<string, { mealAnalysis: number; chat: number; insight: number }>> = {};
-
-function checkAndIncrementAiUsage(
-  uid: string,
-  date: string,
-  type: 'mealAnalysis' | 'chat' | 'insight',
-  isPremium = false
-): { allowed: boolean; remaining: number } {
-  const limits = isPremium ? AI_LIMITS.premium : AI_LIMITS.free;
-
-  if (!aiUsageStore[uid]) aiUsageStore[uid] = {};
-  if (!aiUsageStore[uid][date]) {
-    aiUsageStore[uid][date] = { mealAnalysis: 0, chat: 0, insight: 0 };
-  }
-
-  const currentUsage = aiUsageStore[uid][date];
-  const maxLimit =
-    type === 'mealAnalysis'
-      ? limits.mealAnalysisPerDay
-      : type === 'chat'
-      ? limits.chatPerDay
-      : limits.dailyInsightPerDay;
-
-  if (currentUsage[type] >= maxLimit) {
-    return { allowed: false, remaining: 0 };
-  }
-
-  currentUsage[type] += 1;
-  return { allowed: true, remaining: maxLimit - currentUsage[type] };
-}
-
-// Authentication Middleware (Section 13 & 14)
-interface AuthenticatedRequest extends Request {
-  user?: {
-    uid: string;
-    isPremium: boolean;
-  };
-}
-
-async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
-      success: false,
-      errorCode: 'AUTH_REQUIRED',
-      message: 'Autenticação necessária para acessar este recurso.',
-    });
-  }
-
-  const token = authHeader.split('Bearer ')[1].trim();
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      errorCode: 'AUTH_REQUIRED',
-      message: 'Token de autenticação inválido.',
-    });
-  }
-
-  // Extract UID securely
-  let uid = '';
-  if (token.startsWith('local_dev_token_')) {
-    uid = token.replace('local_dev_token_', '');
-  } else {
-    // If Firebase Admin credentials are configured in environment, verify with Firebase Admin
-    uid = token.slice(0, 28); // Standard 28-char Firebase UID length
-  }
-
-  if (!uid) {
-    return res.status(401).json({
-      success: false,
-      errorCode: 'AUTH_REQUIRED',
-      message: 'Sessão expirada. Entre novamente.',
-    });
-  }
-
-  req.user = {
-    uid,
-    isPremium: false, // In production, reconstructed from backend Firestore claims
-  };
-
-  next();
-}
-
 // Zod Validation Schemas
 const photoAnalysisSchema = z.object({
-  imageBase64: z.string().min(20, 'Imagem inválida'),
+  imageBase64: z.string().min(20, 'Imagem em formato inválido'),
   mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).default('image/jpeg'),
   userNotes: z.string().max(300).optional(),
 });
@@ -420,18 +350,30 @@ const textAnalysisSchema = z.object({
   userNotes: z.string().max(300).optional(),
 });
 
+const chatSchema = z.object({
+  messages: z.array(
+    z.object({
+      id: z.string().optional(),
+      sender: z.enum(['user', 'calu']),
+      text: z.string().max(1000),
+      timestamp: z.string().optional(),
+    })
+  ).max(20),
+});
+
 // --- API ENDPOINTS ---
 
-// Health Check (Section 71: Clean, no leaked secrets)
+// Health Check (Public - no secret leakage)
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     version: APP_VERSION,
     environment: process.env.NODE_ENV || 'production',
+    firebaseAdminReady: isFirebaseAdminReady(),
   });
 });
 
-// Barcode Lookup
+// Barcode Lookup (Public food catalog lookup)
 app.get('/api/barcode/:code', (req: Request, res: Response) => {
   const code = req.params.code;
   const product = BRAZILIAN_BARCODES[code];
@@ -445,7 +387,7 @@ app.get('/api/barcode/:code', (req: Request, res: Response) => {
   });
 });
 
-// Photo Analysis Endpoint
+// Photo Analysis Endpoint (Protected by requireAuth)
 app.post('/api/analyze-meal-photo', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const parseResult = photoAnalysisSchema.safeParse(req.body);
@@ -453,20 +395,26 @@ app.post('/api/analyze-meal-photo', requireAuth, async (req: AuthenticatedReques
       return res.status(400).json({
         success: false,
         errorCode: 'INVALID_INPUT',
+        error: { code: 'INVALID_INPUT', message: 'Formato ou tamanho da imagem inválido.' },
         message: 'Formato ou tamanho da imagem inválido.',
       });
     }
 
     const { imageBase64, mimeType, userNotes } = parseResult.data;
     const uid = req.user!.uid;
-    const dateToday = new Date().toISOString().split('T')[0];
 
-    // Rate Limiting check
-    const rateCheck = checkAndIncrementAiUsage(uid, dateToday, 'mealAnalysis', req.user!.isPremium);
+    // Server-side AI Quota check in Firestore
+    const rateCheck = await ServerAIUsageService.checkAndIncrement(
+      uid,
+      'mealAnalysis',
+      req.user!.isPremium
+    );
+
     if (!rateCheck.allowed) {
       return res.status(429).json({
         success: false,
         errorCode: 'RATE_LIMITED',
+        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite de análises por foto de hoje para o seu plano.' },
         message: 'Você atingiu o limite de análises por foto de hoje para o seu plano.',
       });
     }
@@ -478,21 +426,23 @@ app.post('/api/analyze-meal-photo', requireAuth, async (req: AuthenticatedReques
       return res.status(422).json({
         success: false,
         errorCode: 'AI_ANALYSIS_FAILED',
+        error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa refeição com segurança.' },
         message: 'Não consegui analisar essa refeição com segurança.',
       });
     }
 
-    // Enrich identified foods with deterministic TACO nutritional calculations (Section 5 & 6)
+    // Enrich identified foods with deterministic TACO nutritional calculations
     const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
       aiResult.identifiedFoods
     );
 
-    // If no foods could be matched in database, prompt manual completion instead of fabricating
+    // If no foods could be matched in database, prompt manual confirmation instead of fabricating
     if (calculatedFoods.length === 0) {
       return res.status(422).json({
         success: false,
         errorCode: 'FOOD_NOT_FOUND',
-        message: 'Identifiquei os alimentos, mas eles precisam de conferência manual de nutrientes.',
+        error: { code: 'FOOD_NOT_FOUND', message: 'Alimentos identificados precisam de conferência manual de nutrientes.' },
+        message: 'Alimentos identificados precisam de conferência manual de nutrientes.',
         identifiedNames: unmatchedFoods,
       });
     }
@@ -514,17 +464,17 @@ app.post('/api/analyze-meal-photo', requireAuth, async (req: AuthenticatedReques
       uncertainties,
     });
   } catch (error: any) {
-    console.error('Erro na análise de foto:', error.message);
-    // Never manufacture a fake meal on failure (Section 3)
+    console.error('[API /analyze-meal-photo] Erro na análise:', error.message);
     return res.status(500).json({
       success: false,
       errorCode: 'AI_ANALYSIS_FAILED',
+      error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa refeição com segurança.' },
       message: 'Não consegui analisar essa refeição com segurança.',
     });
   }
 });
 
-// Text & Voice Analysis Endpoint
+// Text & Voice Analysis Endpoint (Protected by requireAuth)
 app.post('/api/analyze-meal-text', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const parseResult = textAnalysisSchema.safeParse(req.body);
@@ -532,19 +482,25 @@ app.post('/api/analyze-meal-text', requireAuth, async (req: AuthenticatedRequest
       return res.status(400).json({
         success: false,
         errorCode: 'INVALID_INPUT',
+        error: { code: 'INVALID_INPUT', message: 'Descrição de refeição inválida.' },
         message: 'Descrição de refeição inválida.',
       });
     }
 
     const { text, userNotes } = parseResult.data;
     const uid = req.user!.uid;
-    const dateToday = new Date().toISOString().split('T')[0];
 
-    const rateCheck = checkAndIncrementAiUsage(uid, dateToday, 'mealAnalysis', req.user!.isPremium);
+    const rateCheck = await ServerAIUsageService.checkAndIncrement(
+      uid,
+      'mealAnalysis',
+      req.user!.isPremium
+    );
+
     if (!rateCheck.allowed) {
       return res.status(429).json({
         success: false,
         errorCode: 'RATE_LIMITED',
+        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite de análises diárias do seu plano.' },
         message: 'Você atingiu o limite de análises diárias do seu plano.',
       });
     }
@@ -555,6 +511,7 @@ app.post('/api/analyze-meal-text', requireAuth, async (req: AuthenticatedRequest
       return res.status(422).json({
         success: false,
         errorCode: 'AI_ANALYSIS_FAILED',
+        error: { code: 'AI_ANALYSIS_FAILED', message: 'Não foi possível identificar alimentos na sua descrição.' },
         message: 'Não foi possível identificar alimentos na sua descrição.',
       });
     }
@@ -567,6 +524,7 @@ app.post('/api/analyze-meal-text', requireAuth, async (req: AuthenticatedRequest
       return res.status(422).json({
         success: false,
         errorCode: 'FOOD_NOT_FOUND',
+        error: { code: 'FOOD_NOT_FOUND', message: 'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.' },
         message: 'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.',
       });
     }
@@ -583,41 +541,233 @@ app.post('/api/analyze-meal-text', requireAuth, async (req: AuthenticatedRequest
       uncertainties: aiResult.uncertainties || [],
     });
   } catch (error: any) {
-    console.error('Erro na análise de texto:', error.message);
+    console.error('[API /analyze-meal-text] Erro:', error.message);
     return res.status(500).json({
       success: false,
       errorCode: 'AI_ANALYSIS_FAILED',
+      error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa descrição no momento.' },
       message: 'Não consegui analisar essa descrição no momento.',
     });
   }
 });
 
-// Daily Insight Endpoint
+// Daily Insight Endpoint (Protected - Rebuilds context server-side from Firestore)
 app.post('/api/daily-insight', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { meals = [], targets = {}, habits = {} } = req.body;
-    const insight = await aiProvider.generateDailyInsight(meals, targets, habits);
+    const uid = req.user!.uid;
+
+    const rateCheck = await ServerAIUsageService.checkAndIncrement(
+      uid,
+      'dailyInsight',
+      req.user!.isPremium
+    );
+
+    if (!rateCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        errorCode: 'RATE_LIMITED',
+        error: { code: 'RATE_LIMITED', message: 'Limite diário de insights atingido.' },
+        message: 'Limite diário de insights atingido.',
+      });
+    }
+
+    // Reconstruct user context directly on the server from Firestore (Anti-spoofing)
+    const userContext = await ServerUserContextService.buildUserContext(uid);
+    const insight = await aiProvider.generateDailyInsight(userContext);
+
     return res.json({ success: true, insight });
   } catch (error: any) {
-    console.error('Erro no insight:', error.message);
-    return res.json({
-      success: true,
-      insight: 'Acompanhar seu dia com regularidade ajuda a construir mais clareza sobre suas escolhas alimentares.',
+    console.error('[API /daily-insight] Erro:', error.message);
+    return res.status(500).json({
+      success: false,
+      errorCode: 'SERVER_ERROR',
+      error: { code: 'SERVER_ERROR', message: 'Não foi possível gerar seu insight agora. Tente novamente mais tarde.' },
+      message: 'Não foi possível gerar seu insight agora. Tente novamente mais tarde.',
     });
   }
 });
 
-// Calu AI Coach Chat Endpoint
+// Calu AI Coach Chat Endpoint (Protected - Rebuilds context server-side from Firestore)
 app.post('/api/chat-calu', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { messages = [], userContext = {} } = req.body;
-    const reply = await aiProvider.chatWithCalu(messages, userContext);
+    const parseResult = chatSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        errorCode: 'INVALID_INPUT',
+        error: { code: 'INVALID_INPUT', message: 'Histórico de mensagens inválido.' },
+        message: 'Histórico de mensagens inválido.',
+      });
+    }
+
+    const uid = req.user!.uid;
+
+    const rateCheck = await ServerAIUsageService.checkAndIncrement(
+      uid,
+      'chat',
+      req.user!.isPremium
+    );
+
+    if (!rateCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        errorCode: 'RATE_LIMITED',
+        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite de mensagens do chat de hoje para o seu plano.' },
+        message: 'Você atingiu o limite de mensagens do chat de hoje para o seu plano.',
+      });
+    }
+
+    // Reconstruct factual context directly from Firestore
+    const userContext = await ServerUserContextService.buildUserContext(uid);
+    const reply = await aiProvider.chatWithCalu(parseResult.data.messages, userContext);
+
     return res.json({ success: true, reply });
   } catch (error: any) {
-    console.error('Erro no chat da Calu:', error.message);
+    console.error('[API /chat-calu] Erro:', error.message);
+    return res.status(500).json({
+      success: false,
+      errorCode: 'AI_CHAT_FAILED',
+      error: { code: 'AI_CHAT_FAILED', message: 'Tive uma breve oscilação de conexão, por favor tente novamente.' },
+      message: 'Tive uma breve oscilação de conexão, por favor tente novamente.',
+    });
+  }
+});
+
+// LGPD Export Data Endpoint (Protected by requireAuth)
+app.get('/api/user/export-data', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+
+    if (!isFirebaseAdminReady()) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'DATABASE_UNAVAILABLE', message: 'Serviço de banco de dados indisponível.' },
+      });
+    }
+
+    const db = getAdminDb();
+
+    // Recursively export all subcollections for the authenticated user
+    const [profileSnap, goalsSnap, mealsSnap, weightsSnap, waterSnap, habitsSnap, memoriesSnap, chatSnap] =
+      await Promise.all([
+        db.doc(`users/${uid}/preferences/profile`).get(),
+        db.doc(`users/${uid}/goals/current`).get(),
+        db.collection(`users/${uid}/meals`).get(),
+        db.collection(`users/${uid}/weightLogs`).get(),
+        db.collection(`users/${uid}/waterLogs`).get(),
+        db.collection(`users/${uid}/habits`).get(),
+        db.collection(`users/${uid}/memories`).get(),
+        db.collection(`users/${uid}/chatMessages`).get(),
+      ]);
+
+    const meals: any[] = [];
+    mealsSnap.forEach(d => meals.push(d.data()));
+
+    const weights: any[] = [];
+    weightsSnap.forEach(d => weights.push(d.data()));
+
+    const water: any[] = [];
+    waterSnap.forEach(d => water.push(d.data()));
+
+    const habits: any[] = [];
+    habitsSnap.forEach(d => habits.push(d.data()));
+
+    const memories: any[] = [];
+    memoriesSnap.forEach(d => memories.push(d.data()));
+
+    const chat: any[] = [];
+    chatSnap.forEach(d => chat.push(d.data()));
+
+    const exportBundle = {
+      app: 'CALU AI v2.1',
+      exportedAt: DateService.getLocalDateTime(),
+      uid,
+      profile: profileSnap.exists ? profileSnap.data() : null,
+      goals: goalsSnap.exists ? goalsSnap.data() : null,
+      meals,
+      weights,
+      waterLogs: water,
+      habits,
+      memories,
+      chatMessages: chat,
+    };
+
+    return res.json({ success: true, data: exportBundle });
+  } catch (error: any) {
+    console.error('[API /user/export-data] Erro:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'EXPORT_FAILED', message: 'Falha ao exportar dados do usuário.' },
+    });
+  }
+});
+
+// LGPD Recursive Delete Account Endpoint (Protected by requireAuth)
+app.post('/api/user/delete-account', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+
+    if (!isFirebaseAdminReady()) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'DATABASE_UNAVAILABLE', message: 'Serviço de banco de dados indisponível.' },
+      });
+    }
+
+    const db = getAdminDb();
+    const auth = getAdminAuth();
+    const storage = getAdminStorage();
+
+    // 1. Delete all Firestore subcollections recursively
+    const subcollections = [
+      'meals',
+      'weightLogs',
+      'waterLogs',
+      'habits',
+      'memories',
+      'chatMessages',
+      'aiUsage',
+      'preferences',
+      'goals',
+    ];
+
+    for (const subcol of subcollections) {
+      const snap = await db.collection(`users/${uid}/${subcol}`).get();
+      const batch = db.batch();
+      snap.forEach(d => batch.delete(d.ref));
+      if (!snap.empty) {
+        await batch.commit();
+      }
+    }
+
+    // Delete user root document
+    await db.doc(`users/${uid}`).delete().catch(() => null);
+
+    // 2. Delete user files from Storage if bucket is configured
+    try {
+      const bucket = storage.bucket();
+      await bucket.deleteFiles({ prefix: `users/${uid}/` });
+    } catch (storageErr: any) {
+      console.warn('[LGPD Delete] Aviso na exclusão do Storage:', storageErr.message);
+    }
+
+    // 3. Delete Firebase Auth user
+    try {
+      await auth.deleteUser(uid);
+    } catch (authErr: any) {
+      console.warn('[LGPD Delete] Aviso na exclusão do Firebase Auth:', authErr.message);
+    }
+
+    console.log(`[LGPD Delete] Usuário ${uid} excluído integralmente.`);
     return res.json({
       success: true,
-      reply: 'Tive uma breve oscilação de conexão, mas estou aqui! O que você gostaria de planejar para a sua alimentação?',
+      message: 'Todos os seus dados e sua conta foram excluídos com sucesso.',
+    });
+  } catch (error: any) {
+    console.error('[API /user/delete-account] Erro:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'DELETE_FAILED', message: 'Falha ao processar exclusão de conta.' },
     });
   }
 });
@@ -639,7 +789,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CALU AI V2.0] Servidor ativo em http://0.0.0.0:${PORT}`);
+    console.log(`[CALU AI V2.1] Servidor ativo em http://0.0.0.0:${PORT}`);
   });
 }
 
