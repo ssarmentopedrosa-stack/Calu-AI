@@ -1,0 +1,6 @@
+{
+  "name": "CALU AI — Acompanhamento Alimentar Inteligente",
+  "description": "Aplicativo Android de acompanhamento nutricional com IA multimodal (foto, voz, texto e código de barras), diário alimentar e Coach Calu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
