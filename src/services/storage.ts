@@ -7,21 +7,22 @@ import {
   CaluMemoryItem, 
   ChatMessage 
 } from '../types';
+import { AuthService } from './authService';
 
 const STORAGE_KEYS = {
-  PROFILE: 'calu_user_profile_v1',
-  GOALS: 'calu_nutrition_goals_v1',
-  MEALS: 'calu_meals_v1',
-  HABITS: 'calu_habits_v1',
-  WEIGHT: 'calu_weight_logs_v1',
-  MEMORY: 'calu_ai_memory_v1',
-  CHAT: 'calu_chat_messages_v1',
-  WATER: 'calu_water_logs_v1',
+  PROFILE: 'calu_user_profile_v2',
+  GOALS: 'calu_nutrition_goals_v2',
+  MEALS: 'calu_meals_v2',
+  HABITS: 'calu_habits_v2',
+  WEIGHT: 'calu_weight_logs_v2',
+  MEMORY: 'calu_ai_memory_v2',
+  CHAT: 'calu_chat_messages_v2',
+  WATER: 'calu_water_logs_v2',
 };
 
 // Default User Profile
 export const DEFAULT_PROFILE: UserProfile = {
-  id: 'user_br_1',
+  uid: 'usr_local_default',
   name: 'Camila',
   age: 28,
   gender: 'feminino',
@@ -31,10 +32,10 @@ export const DEFAULT_PROFILE: UserProfile = {
   goal: 'melhorar_habitos',
   dietaryPreference: 'livre',
   allergiesNotes: 'Nenhuma restrição severa.',
-  isPremium: false,
+  plan: 'free',
   onboardingCompleted: true,
-  dailyAiUsage: 1,
-  lastAiUsageDate: new Date().toISOString().split('T')[0],
+  createdAt: '2026-09-01T08:00:00Z',
+  updatedAt: '2026-10-03T12:00:00Z',
 };
 
 // Default Brazilian Dietary Goals
@@ -47,15 +48,25 @@ export const DEFAULT_GOALS: NutritionGoals = {
   waterMl: 2500,
 };
 
+// Default Habit state (3-state)
+export const DEFAULT_HABITS: HabitState = {
+  waterGoalMet: 'completed',
+  fruitVeggieMet: 'completed',
+  threeMealsMet: 'not_recorded',
+  exerciseMet: 'not_recorded',
+  goodSleepMet: 'completed',
+};
+
 // Seed Brazilian Meals for a realistic starting state
 export const SEED_MEALS: Meal[] = [
   {
     id: 'meal_seed_1',
-    userId: 'user_br_1',
+    uid: 'usr_local_default',
     name: 'Café da manhã reforçado',
     mealType: 'breakfast',
     time: '08:15',
     date: new Date().toISOString().split('T')[0],
+    timestamp: new Date().toISOString(),
     foods: [
       {
         id: 'food_1',
@@ -68,6 +79,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 1.4,
         fat: 12.5,
         fiber: 0.0,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
       {
         id: 'food_2',
@@ -80,6 +92,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 29.2,
         fat: 1.5,
         fiber: 1.1,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
       {
         id: 'food_3',
@@ -92,6 +105,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 7.2,
         fat: 0.3,
         fiber: 0.0,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
     ],
     totalCalories: 369,
@@ -100,14 +114,18 @@ export const SEED_MEALS: Meal[] = [
     totalFat: 14.3,
     totalFiber: 1.1,
     uncertainties: ['Quantidade de azeite estimada em 1 colher de chá.'],
+    userConfirmed: true,
+    createdAt: '2026-10-03T08:15:00Z',
+    updatedAt: '2026-10-03T08:15:00Z',
   },
   {
     id: 'meal_seed_2',
-    userId: 'user_br_1',
+    uid: 'usr_local_default',
     name: 'Almoço Prato Feito (PF Brasileiro)',
     mealType: 'lunch',
     time: '12:45',
     date: new Date().toISOString().split('T')[0],
+    timestamp: new Date().toISOString(),
     foods: [
       {
         id: 'food_4',
@@ -120,6 +138,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 28.1,
         fat: 0.2,
         fiber: 1.6,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
       {
         id: 'food_5',
@@ -132,6 +151,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 19.0,
         fat: 0.7,
         fiber: 11.9,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
       {
         id: 'food_6',
@@ -144,6 +164,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 0.0,
         fat: 3.2,
         fiber: 0.0,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
       {
         id: 'food_7',
@@ -156,6 +177,7 @@ export const SEED_MEALS: Meal[] = [
         carbohydrates: 3.5,
         fat: 3.0,
         fiber: 2.1,
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       },
     ],
     totalCalories: 485,
@@ -164,35 +186,50 @@ export const SEED_MEALS: Meal[] = [
     totalFat: 7.1,
     totalFiber: 15.6,
     uncertainties: ['Porção de feijão estimada visualmente pela concha.'],
+    userConfirmed: true,
+    createdAt: '2026-10-03T12:45:00Z',
+    updatedAt: '2026-10-03T12:45:00Z',
   },
 ];
 
 export const SEED_WEIGHTS: WeightLog[] = [
-  { id: 'w1', weightKg: 66.8, date: '2026-09-01' },
-  { id: 'w2', weightKg: 66.2, date: '2026-09-10' },
-  { id: 'w3', weightKg: 65.9, date: '2026-09-18' },
-  { id: 'w4', weightKg: 65.6, date: '2026-09-26' },
-  { id: 'w5', weightKg: 65.4, date: new Date().toISOString().split('T')[0] },
+  { id: 'w1', uid: 'usr_local_default', weightKg: 66.8, unit: 'kg', date: '2026-09-01', createdAt: '2026-09-01T08:00:00Z' },
+  { id: 'w2', uid: 'usr_local_default', weightKg: 66.2, unit: 'kg', date: '2026-09-10', createdAt: '2026-09-10T08:00:00Z' },
+  { id: 'w3', uid: 'usr_local_default', weightKg: 65.9, unit: 'kg', date: '2026-09-18', createdAt: '2026-09-18T08:00:00Z' },
+  { id: 'w4', uid: 'usr_local_default', weightKg: 65.6, unit: 'kg', date: '2026-09-26', createdAt: '2026-09-26T08:00:00Z' },
+  { id: 'w5', uid: 'usr_local_default', weightKg: 65.4, unit: 'kg', date: new Date().toISOString().split('T')[0], createdAt: new Date().toISOString() },
 ];
 
 export const SEED_MEMORIES: CaluMemoryItem[] = [
   {
     id: 'm1',
+    uid: 'usr_local_default',
     content: 'Prefere almoço tradicional brasileiro (arroz, feijão e proteína magra).',
     category: 'habito',
-    createdAt: '2026-09-15',
+    source: 'usuario',
+    isActive: true,
+    createdAt: '2026-09-15T12:00:00Z',
+    updatedAt: '2026-09-15T12:00:00Z',
   },
   {
     id: 'm2',
+    uid: 'usr_local_default',
     content: 'Gosta de café preto pela manhã e pingado após o almoço.',
     category: 'preferencia',
-    createdAt: '2026-09-20',
+    source: 'usuario',
+    isActive: true,
+    createdAt: '2026-09-20T12:00:00Z',
+    updatedAt: '2026-09-20T12:00:00Z',
   },
   {
     id: 'm3',
+    uid: 'usr_local_default',
     content: 'Evita refrigerantes em dias de semana.',
     category: 'rotina',
-    createdAt: '2026-09-25',
+    source: 'usuario',
+    isActive: true,
+    createdAt: '2026-09-25T12:00:00Z',
+    updatedAt: '2026-09-25T12:00:00Z',
   },
 ];
 
@@ -271,13 +308,20 @@ export class StorageService {
     const existing = all.find(m => m.id === id);
     if (!existing) return null;
 
+    const currentUid = AuthService.getCurrentUser()?.uid || existing.uid || 'usr_local_default';
+    const nowIso = new Date().toISOString();
+
     const duplicated: Meal = {
       ...existing,
       id: 'meal_' + Date.now(),
+      uid: currentUid,
       name: `${existing.name} (Cópia)`,
       time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
       date: new Date().toISOString().split('T')[0],
-      createdAt: new Date().toISOString(),
+      timestamp: nowIso,
+      userConfirmed: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     all.unshift(duplicated);
     localStorage.setItem(STORAGE_KEYS.MEALS, JSON.stringify(all));
@@ -312,22 +356,14 @@ export class StorageService {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.HABITS);
       const logs: Record<string, HabitState> = data ? JSON.parse(data) : {};
-      return (
-        logs[date] || {
-          waterGoalMet: true,
-          fruitVeggieMet: true,
-          threeMealsMet: false,
-          exerciseMet: false,
-          goodSleepMet: true,
-        }
-      );
+      return logs[date] || DEFAULT_HABITS;
     } catch {
       return {
-        waterGoalMet: false,
-        fruitVeggieMet: false,
-        threeMealsMet: false,
-        exerciseMet: false,
-        goodSleepMet: false,
+        waterGoalMet: 'not_recorded',
+        fruitVeggieMet: 'not_recorded',
+        threeMealsMet: 'not_recorded',
+        exerciseMet: 'not_recorded',
+        goodSleepMet: 'not_recorded',
       };
     }
   }
@@ -356,14 +392,25 @@ export class StorageService {
     }
   }
 
-  static addWeight(weightKg: number, date: string, note?: string): void {
+  static addWeight(weightKg: number, date: string, notes?: string): void {
     const list = this.getWeights();
     const existingIndex = list.findIndex(w => w.date === date);
+    const currentUid = AuthService.getCurrentUser()?.uid || 'usr_local_default';
+    const nowIso = new Date().toISOString();
+
     if (existingIndex >= 0) {
       list[existingIndex].weightKg = weightKg;
-      if (note) list[existingIndex].note = note;
+      if (notes !== undefined) list[existingIndex].notes = notes;
     } else {
-      list.push({ id: 'w_' + Date.now(), weightKg, date, note });
+      list.push({
+        id: 'w_' + Date.now(),
+        uid: currentUid,
+        weightKg,
+        unit: 'kg',
+        date,
+        notes,
+        createdAt: nowIso,
+      });
       list.sort((a, b) => a.date.localeCompare(b.date));
     }
     localStorage.setItem(STORAGE_KEYS.WEIGHT, JSON.stringify(list));
@@ -389,11 +436,18 @@ export class StorageService {
 
   static addMemory(content: string, category: CaluMemoryItem['category']): void {
     const list = this.getMemories();
+    const currentUid = AuthService.getCurrentUser()?.uid || 'usr_local_default';
+    const nowIso = new Date().toISOString();
+
     list.unshift({
       id: 'm_' + Date.now(),
+      uid: currentUid,
       content,
       category,
-      createdAt: new Date().toISOString().split('T')[0],
+      source: 'usuario',
+      isActive: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     });
     localStorage.setItem(STORAGE_KEYS.MEMORY, JSON.stringify(list));
   }
@@ -437,7 +491,7 @@ export class StorageService {
       weights: this.getWeights(),
       memories: this.getMemories(),
       exportDate: new Date().toISOString(),
-      app: 'CALU AI v1.0',
+      app: 'CALU AI v2.0',
     };
     return JSON.stringify(data, null, 2);
   }

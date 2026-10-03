@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Image as ImageIcon, X, RefreshCw, Sparkles, Check, AlertCircle } from 'lucide-react';
+import { Camera, Image as ImageIcon, X, RefreshCw, Sparkles, AlertCircle, Edit3 } from 'lucide-react';
 import { CaluApiService } from '../services/api';
-import { MealAnalysisResponse } from '../types';
+import { MealAnalysisResponse, MealAnalysisSuccessResponse } from '../types';
+import { ImageCompressionService } from '../services/imageCompression';
 
 interface PhotoCaptureModalProps {
-  onAnalysisComplete: (data: MealAnalysisResponse, photoUrl?: string) => void;
+  onAnalysisComplete: (data: MealAnalysisSuccessResponse, photoUrl?: string) => void;
+  onOpenManualEntry: () => void;
   onClose: () => void;
 }
 
-// Sample Brazilian food base64/URLs for instant testing if camera is not handy
 const SAMPLE_BRAZILIAN_MEALS = [
   {
     name: 'Prato Feito (PF) Clássico',
@@ -25,15 +26,11 @@ const SAMPLE_BRAZILIAN_MEALS = [
     description: 'Açaí puro, rodelas de banana e granola',
     imageUrl: 'https://images.unsplash.com/photo-1590080875515-8a3a8dc5735e?auto=format&fit=crop&w=600&q=80',
   },
-  {
-    name: 'Frango com Legumes e Arroz',
-    description: 'Peito de frango grelhado e cenoura/brócolis',
-    imageUrl: 'https://images.unsplash.com/photo-1543339308-43e59d6b73a6?auto=format&fit=crop&w=600&q=80',
-  },
 ];
 
 export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
   onAnalysisComplete,
+  onOpenManualEntry,
   onClose,
 }) => {
   const [streamActive, setStreamActive] = useState(false);
@@ -41,16 +38,16 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
   const [mimeType, setMimeType] = useState<string>('image/jpeg');
   const [userNotes, setUserNotes] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [analysisStatusText, setAnalysisStatusText] = useState('Analisando sua refeição...');
+  const [errorInfo, setErrorInfo] = useState<{ message: string; showManualFallback: boolean } | null>(null);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Initialize camera stream
   const startCamera = async () => {
     try {
-      setErrorMsg(null);
+      setErrorInfo(null);
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(t => t.stop());
@@ -69,8 +66,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
         await videoRef.current.play();
         setStreamActive(true);
       }
-    } catch (err: any) {
-      console.warn('Camera access error or unsupported:', err);
+    } catch {
       setStreamActive(false);
     }
   };
@@ -89,7 +85,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     setFacingMode(prev => (prev === 'environment' ? 'user' : 'environment'));
   };
 
-  const handleCaptureFromCamera = () => {
+  const handleCaptureFromCamera = async () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth || 640;
@@ -97,11 +93,13 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    setCapturedImage(dataUrl);
-    setMimeType('image/jpeg');
+    const rawDataUrl = canvas.toDataURL('image/jpeg', 0.85);
 
-    // Stop camera stream to save battery
+    // Compress client-side
+    const compressed = await ImageCompressionService.compressImage(rawDataUrl);
+    setCapturedImage(compressed.dataUrl);
+    setMimeType(compressed.mimeType);
+
     if (videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(t => t.stop());
@@ -109,37 +107,35 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setMimeType(file.type || 'image/jpeg');
-    const reader = new FileReader();
-    reader.onload = event => {
-      const result = event.target?.result as string;
-      setCapturedImage(result);
-    };
-    reader.readAsDataURL(file);
+    try {
+      const compressed = await ImageCompressionService.compressImage(file);
+      setCapturedImage(compressed.dataUrl);
+      setMimeType(compressed.mimeType);
+      setErrorInfo(null);
+    } catch (err: any) {
+      setErrorInfo({
+        message: 'Não foi possível processar a imagem. Tente outra foto.',
+        showManualFallback: true,
+      });
+    }
   };
 
-  // Convert remote image url to base64 for sample dishes
   const selectSampleMeal = async (sample: (typeof SAMPLE_BRAZILIAN_MEALS)[0]) => {
     try {
       setIsAnalyzing(true);
-      setErrorMsg(null);
-      // Fetch and convert sample
+      setErrorInfo(null);
       const res = await fetch(sample.imageUrl);
       const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64data = reader.result as string;
-        setCapturedImage(base64data);
-        setMimeType('image/jpeg');
-        setIsAnalyzing(false);
-      };
-      reader.readAsDataURL(blob);
+      const compressed = await ImageCompressionService.compressImage(blob);
+      setCapturedImage(compressed.dataUrl);
+      setMimeType(compressed.mimeType);
     } catch {
       setCapturedImage(sample.imageUrl);
+    } finally {
       setIsAnalyzing(false);
     }
   };
@@ -148,7 +144,12 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     if (!capturedImage) return;
 
     setIsAnalyzing(true);
-    setErrorMsg(null);
+    setErrorInfo(null);
+    setAnalysisStatusText('Identificando alimentos com a Calu...');
+
+    // Progress updates
+    const t1 = setTimeout(() => setAnalysisStatusText('Consultando tabela nutricional TACO...'), 2500);
+    const t2 = setTimeout(() => setAnalysisStatusText('Calculando porções e macronutrientes...'), 5000);
 
     try {
       const result = await CaluApiService.analyzePhoto(
@@ -156,12 +157,27 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
         mimeType,
         userNotes.trim() || undefined
       );
-      onAnalysisComplete(result, capturedImage);
+
+      clearTimeout(t1);
+      clearTimeout(t2);
+
+      if (result.success) {
+        onAnalysisComplete(result, capturedImage);
+      } else {
+        // Section 3: Do NOT invent fake food. Display human error with options
+        setErrorInfo({
+          message: 'Não consegui analisar essa refeição com segurança.',
+          showManualFallback: true,
+        });
+        setIsAnalyzing(false);
+      }
     } catch (err: any) {
-      console.error(err);
-      setErrorMsg(
-        err.message || 'Não foi possível analisar a refeição no momento. Tente novamente ou use a entrada por texto.'
-      );
+      clearTimeout(t1);
+      clearTimeout(t2);
+      setErrorInfo({
+        message: 'Não consegui analisar essa refeição com segurança.',
+        showManualFallback: true,
+      });
       setIsAnalyzing(false);
     }
   };
@@ -177,7 +193,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-100">Fotografar Refeição</h2>
-              <p className="text-xs text-slate-400">A Calu identifica os alimentos e porções</p>
+              <p className="text-xs text-slate-400">A Calu identifica e busca na base TACO</p>
             </div>
           </div>
           <button
@@ -190,14 +206,43 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
 
         {/* Content */}
         <div className="p-5 overflow-y-auto space-y-4">
-          {errorMsg && (
-            <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl flex items-center gap-2 text-rose-300 text-xs">
-              <AlertCircle size={16} className="shrink-0" />
-              <span>{errorMsg}</span>
+          {errorInfo && (
+            <div className="p-4 bg-rose-500/15 border border-rose-500/30 rounded-2xl space-y-2.5 text-xs text-rose-300">
+              <div className="flex items-center gap-2">
+                <AlertCircle size={18} className="shrink-0 text-rose-400" />
+                <span className="font-semibold">{errorInfo.message}</span>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorInfo(null);
+                    setCapturedImage(null);
+                    startCamera();
+                  }}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold flex items-center gap-1.5"
+                >
+                  <RefreshCw size={13} />
+                  <span>Tentar novamente</span>
+                </button>
+                {errorInfo.showManualFallback && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenManualEntry();
+                    }}
+                    className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-slate-950 rounded-xl font-bold flex items-center gap-1.5"
+                  >
+                    <Edit3 size={13} />
+                    <span>Registrar manualmente</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Camera or Image Preview Box */}
+          {/* Camera Viewport / Preview */}
           <div className="relative w-full aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 flex items-center justify-center">
             {capturedImage ? (
               <img
@@ -214,7 +259,6 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
                   muted
                   className="w-full h-full object-cover"
                 />
-                {/* Visual Target Frame */}
                 <div className="absolute inset-8 border-2 border-dashed border-orange-400/40 rounded-2xl pointer-events-none flex items-center justify-center">
                   <span className="text-[11px] text-orange-300/80 bg-black/40 px-2 py-1 rounded-md backdrop-blur-xs">
                     Centralize o prato aqui
@@ -225,19 +269,18 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
               <div className="text-center p-6 space-y-3">
                 <Camera size={40} className="mx-auto text-slate-600 animate-pulse" />
                 <p className="text-xs text-slate-400 max-w-xs">
-                  Aponte a câmera para sua comida ou selecione uma foto da galeria.
+                  Aponte a câmera para sua refeição ou selecione uma foto da galeria.
                 </p>
                 <button
                   type="button"
                   onClick={startCamera}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 inline-flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 inline-flex items-center gap-1.5"
                 >
                   <RefreshCw size={12} /> Tentar Câmera Novamente
                 </button>
               </div>
             )}
 
-            {/* In-camera Controls Overlay */}
             {!capturedImage && streamActive && (
               <div className="absolute bottom-4 left-0 right-0 flex items-center justify-around px-6">
                 <button
@@ -249,7 +292,6 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
                   <RefreshCw size={18} />
                 </button>
 
-                {/* Shutter Button */}
                 <button
                   type="button"
                   onClick={handleCaptureFromCamera}
@@ -270,7 +312,6 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
               </div>
             )}
 
-            {/* Retake button when image is captured */}
             {capturedImage && (
               <button
                 type="button"
@@ -293,21 +334,17 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
             onChange={handleFileUpload}
           />
 
-          {/* Quick upload button if not captured */}
           {!capturedImage && (
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex-1 py-2.5 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-2"
-              >
-                <ImageIcon size={16} className="text-orange-400" />
-                <span>Escolher da Galeria</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full py-2.5 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-2"
+            >
+              <ImageIcon size={16} className="text-orange-400" />
+              <span>Escolher da Galeria</span>
+            </button>
           )}
 
-          {/* Optional context note */}
           <div>
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
               Observações opcionais para a Calu:
@@ -321,35 +358,31 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
             />
           </div>
 
-          {/* Quick Brazilian Samples for immediate testing */}
           <div>
             <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
               Ou teste com um prato brasileiro:
             </span>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {SAMPLE_BRAZILIAN_MEALS.map((sample, i) => (
                 <button
                   key={i}
                   type="button"
                   onClick={() => selectSampleMeal(sample)}
-                  className="flex items-center gap-2 p-2 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-xl text-left transition-all group"
+                  className="flex flex-col items-center p-2 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-xl text-center transition-all group"
                 >
                   <img
                     src={sample.imageUrl}
                     alt={sample.name}
-                    className="w-10 h-10 rounded-lg object-cover group-hover:scale-105 transition-transform shrink-0"
+                    className="w-full h-14 rounded-lg object-cover group-hover:scale-105 transition-transform"
                   />
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold text-slate-200 truncate">{sample.name}</p>
-                    <p className="text-[9px] text-slate-400 line-clamp-1">{sample.description}</p>
-                  </div>
+                  <p className="text-[10px] font-semibold text-slate-200 mt-1 line-clamp-1">{sample.name}</p>
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Footer Action */}
+        {/* Footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/95 flex gap-3">
           <button
             type="button"
@@ -373,7 +406,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
             {isAnalyzing ? (
               <>
                 <RefreshCw size={14} className="animate-spin text-slate-950" />
-                <span className="text-slate-950 font-bold">Analisando sua refeição com IA...</span>
+                <span className="text-slate-950 font-bold">{analysisStatusText}</span>
               </>
             ) : (
               <>

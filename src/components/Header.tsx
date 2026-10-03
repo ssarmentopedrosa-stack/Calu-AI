@@ -1,13 +1,15 @@
 import React from 'react';
 import { CaluMascot } from './CaluMascot';
-import { ChevronLeft, ChevronRight, Calendar, Sparkles } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar, UserCheck } from 'lucide-react';
 import { UserProfile } from '../types';
+import { DateService } from '../services/dateService';
 
 interface HeaderProps {
   user: UserProfile;
   selectedDate: string;
   onDateChange: (date: string) => void;
   onOpenCoach: () => void;
+  onOpenAuth: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -15,31 +17,23 @@ export const Header: React.FC<HeaderProps> = ({
   selectedDate,
   onDateChange,
   onOpenCoach,
+  onOpenAuth,
 }) => {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = DateService.getLocalDate();
   const isToday = selectedDate === todayStr;
 
   const handlePrevDay = () => {
-    const d = new Date(selectedDate + 'T12:00:00');
-    d.setDate(d.getDate() - 1);
-    onDateChange(d.toISOString().split('T')[0]);
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    dateObj.setDate(dateObj.getDate() - 1);
+    onDateChange(DateService.getLocalDate(dateObj));
   };
 
   const handleNextDay = () => {
-    const d = new Date(selectedDate + 'T12:00:00');
-    d.setDate(d.getDate() + 1);
-    onDateChange(d.toISOString().split('T')[0]);
-  };
-
-  // Format date nicely in Brazilian Portuguese
-  const formatDateBR = (iso: string) => {
-    if (iso === todayStr) return 'Hoje';
-    const d = new Date(iso + 'T12:00:00');
-    return d.toLocaleDateString('pt-BR', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-    });
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    dateObj.setDate(dateObj.getDate() + 1);
+    onDateChange(DateService.getLocalDate(dateObj));
   };
 
   return (
@@ -57,7 +51,15 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-semibold uppercase tracking-wider text-orange-400">CALU AI</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400 font-medium">BR</span>
+              <button
+                type="button"
+                onClick={onOpenAuth}
+                className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400 hover:text-slate-200 font-medium flex items-center gap-1"
+                title="Gerenciar conta e UID"
+              >
+                <UserCheck size={10} className="text-emerald-400" />
+                <span>UID</span>
+              </button>
             </div>
             <h1 className="text-base font-bold text-slate-100 flex items-center gap-1">
               Olá, {user.name} <span className="inline-block animate-wiggle">👋</span>
@@ -77,7 +79,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <div className="px-2 font-medium text-slate-200 flex items-center gap-1 min-w-[76px] justify-center">
             <Calendar size={12} className="text-orange-400" />
-            <span>{formatDateBR(selectedDate)}</span>
+            <span>{DateService.formatLocalDate(selectedDate)}</span>
           </div>
 
           <button

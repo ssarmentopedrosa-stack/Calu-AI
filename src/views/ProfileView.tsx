@@ -8,9 +8,8 @@ import {
   Crown, 
   RotateCcw, 
   Save, 
-  AlertCircle, 
   Check, 
-  Heart,
+  LogOut,
   ChevronRight
 } from 'lucide-react';
 import { CaluMascot } from '../components/CaluMascot';
@@ -21,6 +20,7 @@ interface ProfileViewProps {
   onUpdateProfile: (profile: UserProfile) => void;
   onUpdateGoals: (goals: NutritionGoals) => void;
   onOpenPrivacy: () => void;
+  onOpenAuth: () => void;
   onRestartOnboarding: () => void;
 }
 
@@ -30,6 +30,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onUpdateProfile,
   onUpdateGoals,
   onOpenPrivacy,
+  onOpenAuth,
   onRestartOnboarding,
 }) => {
   const [profileForm, setProfileForm] = useState<UserProfile>(user);
@@ -52,15 +53,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-bold text-slate-100">{profileForm.name}</h2>
-            <span className="text-[10px] bg-orange-500/15 text-orange-400 font-bold px-2 py-0.5 rounded-full">
-              {profileForm.isPremium ? 'CALU PRO' : 'PLANO FREE'}
+            <span className="text-[10px] bg-orange-500/15 text-orange-400 font-bold px-2 py-0.5 rounded-full uppercase">
+              {profileForm.plan === 'premium' ? 'CALU PRO' : 'PLANO FREE'}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
             {profileForm.weightKg} kg • {profileForm.heightCm} cm • {profileForm.age} anos
           </p>
-          <p className="text-[11px] text-slate-500 mt-1 capitalize">
-            Objetivo: {profileForm.goal.replace('_', ' ')}
+          <p className="text-[10px] text-slate-500 font-mono mt-1 truncate">
+            UID: {user.uid}
           </p>
         </div>
       </div>
@@ -68,7 +69,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       {savedSuccess && (
         <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-2xl flex items-center gap-2 text-emerald-300 text-xs animate-fadeIn">
           <Check size={16} className="text-emerald-400 shrink-0" />
-          <span>Alterações salvas com sucesso!</span>
+          <span>Alterações salvas com sucesso no banco de dados!</span>
         </div>
       )}
 
@@ -78,13 +79,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-3.5">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-1.5">
-              <Target size={15} className="text-orange-400" /> Metas Nutricionais Diárias
+              <Target size={15} className="text-orange-400" /> Metas Nutricionais Estimadas
             </h3>
             <span className="text-[10px] text-slate-500">Editável</span>
           </div>
 
           <p className="text-[11px] text-slate-400 leading-relaxed bg-slate-950 p-2.5 rounded-xl border border-slate-800/80">
-            ⚠️ <b>Aviso:</b> As metas são estimativas baseadas em médias populacionais e não substituem orientação profissional de um nutricionista.
+            ⚠️ <b>Aviso:</b> As metas são estimativas baseadas em parâmetros médios e não substituem orientação de um nutricionista ou médico.
           </p>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
@@ -250,36 +251,28 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </button>
       </form>
 
-      {/* AI Usage & Monetization / Architecture Box */}
+      {/* Plan Card */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Crown size={16} className="text-amber-400" />
             <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-              Plano & Uso de IA
+              Plano & Limites de IA
             </h3>
           </div>
-          <span className="text-[10px] text-slate-400">Google Play Billing Ready</span>
+          <span className="text-[10px] text-emerald-400 font-semibold">Backend Controlado</span>
         </div>
 
-        <div className="space-y-1 text-xs text-slate-300">
-          <p>
-            Análises por foto hoje: <b className="text-orange-400">1 / 5</b> gratuitas
-          </p>
-          <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-            <div className="h-full bg-orange-400 rounded-full" style={{ width: '20%' }} />
-          </div>
-        </div>
+        <p className="text-xs text-slate-300">
+          Você está no plano <b className="text-orange-400 uppercase">{user.plan}</b>. Limites diários: 5 fotos/dia e 20 mensagens de chat/dia.
+        </p>
 
         <button
           type="button"
-          onClick={() => {
-            alert('Arquitetura preparada para Google Play Billing. O modo Pro concede análises multimodais ilimitadas e relatórios avançados.');
-          }}
-          className="w-full py-2.5 bg-slate-800 hover:bg-slate-750 text-amber-400 border border-amber-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+          onClick={onOpenAuth}
+          className="w-full py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors"
         >
-          <Sparkles size={14} />
-          <span>Conhecer o Calu Pro</span>
+          <span>Gerenciar Autenticação e Sessão</span>
         </button>
       </div>
 
@@ -294,7 +287,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <ShieldCheck size={18} className="text-emerald-400" />
             <div className="text-left">
               <span className="font-bold block">Privacidade, Termos e LGPD</span>
-              <span className="text-[10px] text-slate-400">Exportar ou excluir seus dados</span>
+              <span className="text-[10px] text-slate-400">Exportar ou excluir seus dados do UID</span>
             </div>
           </div>
           <ChevronRight size={16} className="text-slate-500" />

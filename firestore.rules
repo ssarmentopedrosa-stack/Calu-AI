@@ -1,0 +1,70 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User profile and subcollections
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      // Meals subcollection
+      match /meals/{mealId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Weight logs subcollection
+      match /weightLogs/{weightId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Water logs subcollection
+      match /waterLogs/{waterId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Habits subcollection
+      match /habits/{habitId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Calu AI memories subcollection
+      match /memories/{memoryId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // AI Chat messages subcollection
+      match /chatMessages/{messageId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // AI Usage subcollection (read-only for user, written by backend/admin)
+      match /aiUsage/{date} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Only server/cloud functions can write usage counters
+      }
+
+      // Preferences and profile document
+      match /preferences/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Goals document
+      match /goals/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Default deny for all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

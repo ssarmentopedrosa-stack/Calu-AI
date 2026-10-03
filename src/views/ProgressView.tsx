@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { WeightLog, HabitState, NutritionGoals } from '../types';
 import { 
-  TrendingUp, 
   Plus, 
   Check, 
   Droplet, 
@@ -9,10 +8,11 @@ import {
   Utensils, 
   Activity, 
   Moon, 
-  AlertCircle, 
   Sparkles,
-  Heart
+  Heart,
+  Scale
 } from 'lucide-react';
+import { DateService } from '../services/dateService';
 
 interface ProgressViewProps {
   weights: WeightLog[];
@@ -32,11 +32,12 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
   const [period, setPeriod] = useState<'7d' | '30d' | '90d'>('7d');
   const [showAddWeight, setShowAddWeight] = useState(false);
   const [newWeight, setNewWeight] = useState('');
-  const [weightDate, setWeightDate] = useState(new Date().toISOString().split('T')[0]);
+  const [weightDate, setWeightDate] = useState(DateService.getLocalDate());
 
-  const latestWeight = weights.length > 0 ? weights[weights.length - 1].weightKg : 65.4;
-  const initialWeight = weights.length > 0 ? weights[0].weightKg : 66.8;
-  const weightDiff = Number((latestWeight - initialWeight).toFixed(1));
+  const hasWeights = weights.length > 0;
+  const latestWeight = hasWeights ? weights[weights.length - 1].weightKg : null;
+  const initialWeight = hasWeights ? weights[0].weightKg : null;
+  const weightDiff = (latestWeight && initialWeight) ? Number((latestWeight - initialWeight).toFixed(1)) : 0;
 
   const handleSaveWeight = () => {
     const val = parseFloat(newWeight.replace(',', '.'));
@@ -47,12 +48,13 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
     }
   };
 
-  // SVG Weight trend line calculation
   const renderWeightChart = () => {
-    if (weights.length < 2) {
+    if (!hasWeights || weights.length < 2) {
       return (
-        <div className="h-32 flex items-center justify-center text-xs text-slate-500">
-          Registre mais pesagens para traçar a curva de tendência.
+        <div className="h-32 flex flex-col items-center justify-center text-xs text-slate-500 space-y-1.5 p-4 border border-dashed border-slate-800 rounded-2xl">
+          <Scale size={24} className="text-slate-600" />
+          <p className="font-medium text-slate-400">Nenhuma pesagem suficiente para curva de tendência.</p>
+          <p className="text-[11px] text-slate-500">Registre suas pesagens quando desejar para acompanhar a evolução.</p>
         </div>
       );
     }
@@ -72,12 +74,10 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
     return (
       <div className="relative pt-2">
         <svg viewBox="0 0 320 140" className="w-full h-32 overflow-visible">
-          {/* Subtle grid lines */}
           <line x1="10" y1="30" x2="310" y2="30" stroke="#334155" strokeDasharray="3 3" />
           <line x1="10" y1="75" x2="310" y2="75" stroke="#334155" strokeDasharray="3 3" />
           <line x1="10" y1="120" x2="310" y2="120" stroke="#334155" strokeDasharray="3 3" />
 
-          {/* Trend Polyline */}
           <polyline
             fill="none"
             stroke="#f97316"
@@ -87,7 +87,6 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
             points={points}
           />
 
-          {/* Dots */}
           {weights.map((w, idx) => {
             const x = (idx / (weights.length - 1)) * 300 + 10;
             const y = 120 - ((w.weightKg - minWeight) / range) * 90;
@@ -108,6 +107,56 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
             );
           })}
         </svg>
+      </div>
+    );
+  };
+
+  // Helper for 3-state habits: not_recorded -> completed -> not_completed
+  const renderHabitRow = (
+    key: keyof HabitState,
+    title: string,
+    subtitle: string,
+    icon: React.ReactNode,
+    state: HabitState[keyof HabitState]
+  ) => {
+    const isCompleted = state === 'completed';
+    const isNotCompleted = state === 'not_completed';
+
+    return (
+      <div
+        onClick={() => onToggleHabit(key)}
+        className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
+          isCompleted
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : isNotCompleted
+            ? 'bg-rose-500/10 border-rose-500/20 text-rose-300'
+            : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-xl bg-slate-800 text-orange-400">{icon}</div>
+          <div>
+            <h4 className="text-xs font-bold text-slate-200">{title}</h4>
+            <p className="text-[10px] text-slate-400">{subtitle}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <span className="text-[10px]">
+            {isCompleted ? 'Cumprido' : isNotCompleted ? 'Não hoje' : 'Não registrado'}
+          </span>
+          <div
+            className={`w-6 h-6 rounded-lg flex items-center justify-center ${
+              isCompleted
+                ? 'bg-emerald-400 text-slate-950 font-bold'
+                : isNotCompleted
+                ? 'bg-rose-500/30 text-rose-300'
+                : 'border border-slate-700'
+            }`}
+          >
+            {isCompleted && <Check size={14} strokeWidth={3} />}
+          </div>
+        </div>
       </div>
     );
   };
@@ -159,15 +208,19 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
               Acompanhamento de Peso
             </span>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="text-3xl font-black text-slate-100">{latestWeight}</span>
-              <span className="text-xs text-slate-400 font-semibold">kg</span>
-              <span
-                className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                  weightDiff <= 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'
-                }`}
-              >
-                {weightDiff > 0 ? `+${weightDiff}` : `${weightDiff}`} kg no histórico
+              <span className="text-3xl font-black text-slate-100">
+                {latestWeight !== null ? latestWeight : '--'}
               </span>
+              <span className="text-xs text-slate-400 font-semibold">kg</span>
+              {hasWeights && (
+                <span
+                  className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                    weightDiff <= 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {weightDiff > 0 ? `+${weightDiff}` : `${weightDiff}`} kg no período
+                </span>
+              )}
             </div>
           </div>
 
@@ -180,7 +233,6 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
           </button>
         </div>
 
-        {/* Form to add weight */}
         {showAddWeight && (
           <div className="bg-slate-800/80 border border-orange-500/30 rounded-2xl p-3.5 space-y-3 animate-fadeIn">
             <h4 className="text-xs font-bold text-slate-200">Novo registro de peso</h4>
@@ -192,7 +244,7 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
                   step="0.1"
                   value={newWeight}
                   onChange={e => setNewWeight(e.target.value)}
-                  placeholder="Ex: 65.5"
+                  placeholder="Ex: 68.5"
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-orange-500"
                 />
               </div>
@@ -225,178 +277,80 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
           </div>
         )}
 
-        {/* Visual Line Chart */}
         {renderWeightChart()}
 
-        {/* Non-punitive Reassuring Message */}
         <div className="p-3 bg-slate-850/80 rounded-2xl border border-slate-800 flex items-start gap-2.5 text-xs text-slate-300">
           <Heart size={16} className="text-rose-400 shrink-0 mt-0.5" />
           <p className="text-[11px] leading-relaxed">
-            <b>Lembrete da Calu:</b> Não é necessário pesar-se diariamente. O peso corporal oscila naturalmente devido à retenção de água, digestão e rotina. O foco é a constância e seu bem-estar!
+            <b>Lembrete da Calu:</b> Não é necessário pesar-se diariamente. O peso oscila naturalmente devido à água e rotina. O objetivo é sua saúde e constância!
           </p>
         </div>
       </div>
 
-      {/* Daily Habits Checklist */}
+      {/* Daily Habits Checklist (3-state: not_recorded -> completed -> not_completed) */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
               Acompanhamento de Hábitos
             </h3>
-            <p className="text-[11px] text-slate-400">Ative os hábitos que fazem sentido para você</p>
+            <p className="text-[11px] text-slate-400">Toque para alternar o status do hábito</p>
           </div>
           <span className="text-xs font-bold text-orange-400">
-            {Object.values(habits).filter(Boolean).length}/5
+            {Object.values(habits).filter(v => v === 'completed').length}/5
           </span>
         </div>
 
         <div className="space-y-2">
-          {/* 1. Água */}
-          <div
-            onClick={() => onToggleHabit('waterGoalMet')}
-            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-              habits.waterGoalMet
-                ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
-                : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-cyan-500/15 text-cyan-400">
-                <Droplet size={16} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Meta de Água</h4>
-                <p className="text-[10px] text-slate-400">Consumir {(goals.waterMl / 1000).toFixed(1)}L de água pura</p>
-              </div>
-            </div>
-            <div
-              className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                habits.waterGoalMet ? 'bg-cyan-400 text-slate-950 font-bold' : 'border border-slate-700'
-              }`}
-            >
-              {habits.waterGoalMet && <Check size={14} strokeWidth={3} />}
-            </div>
-          </div>
+          {renderHabitRow(
+            'waterGoalMet',
+            'Meta de Água',
+            `Consumir ${(goals.waterMl / 1000).toFixed(1)}L de água pura`,
+            <Droplet size={16} className="text-cyan-400" />,
+            habits.waterGoalMet
+          )}
 
-          {/* 2. Frutas e Vegetais */}
-          <div
-            onClick={() => onToggleHabit('fruitVeggieMet')}
-            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-              habits.fruitVeggieMet
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-400">
-                <Apple size={16} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Frutas & Vegetais</h4>
-                <p className="text-[10px] text-slate-400">Incluir saladas ou frutas no dia</p>
-              </div>
-            </div>
-            <div
-              className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                habits.fruitVeggieMet ? 'bg-emerald-400 text-slate-950 font-bold' : 'border border-slate-700'
-              }`}
-            >
-              {habits.fruitVeggieMet && <Check size={14} strokeWidth={3} />}
-            </div>
-          </div>
+          {renderHabitRow(
+            'fruitVeggieMet',
+            'Frutas & Vegetais',
+            'Incluir vegetais ou frutas no prato',
+            <Apple size={16} className="text-emerald-400" />,
+            habits.fruitVeggieMet
+          )}
 
-          {/* 3. Refeições principais */}
-          <div
-            onClick={() => onToggleHabit('threeMealsMet')}
-            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-              habits.threeMealsMet
-                ? 'bg-orange-500/10 border-orange-500/30 text-orange-300'
-                : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-orange-500/15 text-orange-400">
-                <Utensils size={16} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Refeições Estruturadas</h4>
-                <p className="text-[10px] text-slate-400">Registrar pelo menos 3 refeições</p>
-              </div>
-            </div>
-            <div
-              className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                habits.threeMealsMet ? 'bg-orange-400 text-slate-950 font-bold' : 'border border-slate-700'
-              }`}
-            >
-              {habits.threeMealsMet && <Check size={14} strokeWidth={3} />}
-            </div>
-          </div>
+          {renderHabitRow(
+            'threeMealsMet',
+            'Refeições Estruturadas',
+            'Registrar pelo menos 3 refeições no dia',
+            <Utensils size={16} className="text-orange-400" />,
+            habits.threeMealsMet
+          )}
 
-          {/* 4. Atividade física */}
-          <div
-            onClick={() => onToggleHabit('exerciseMet')}
-            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-              habits.exerciseMet
-                ? 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-rose-500/15 text-rose-400">
-                <Activity size={16} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Movimento & Atividade</h4>
-                <p className="text-[10px] text-slate-400">Caminhada, treino ou esporte</p>
-              </div>
-            </div>
-            <div
-              className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                habits.exerciseMet ? 'bg-rose-400 text-slate-950 font-bold' : 'border border-slate-700'
-              }`}
-            >
-              {habits.exerciseMet && <Check size={14} strokeWidth={3} />}
-            </div>
-          </div>
+          {renderHabitRow(
+            'exerciseMet',
+            'Movimento & Atividade',
+            'Caminhada, treino ou esporte',
+            <Activity size={16} className="text-rose-400" />,
+            habits.exerciseMet
+          )}
 
-          {/* 5. Sono reparador */}
-          <div
-            onClick={() => onToggleHabit('goodSleepMet')}
-            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-              habits.goodSleepMet
-                ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
-                : 'bg-slate-800/40 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-indigo-500/15 text-indigo-400">
-                <Moon size={16} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Sono Reparador</h4>
-                <p className="text-[10px] text-slate-400">7 a 8 horas de descanso de qualidade</p>
-              </div>
-            </div>
-            <div
-              className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                habits.goodSleepMet ? 'bg-indigo-400 text-slate-950 font-bold' : 'border border-slate-700'
-              }`}
-            >
-              {habits.goodSleepMet && <Check size={14} strokeWidth={3} />}
-            </div>
-          </div>
+          {renderHabitRow(
+            'goodSleepMet',
+            'Sono Reparador',
+            '7 a 8 horas de descanso de qualidade',
+            <Moon size={16} className="text-indigo-400" />,
+            habits.goodSleepMet
+          )}
         </div>
       </div>
 
-      {/* Weekly AI Summary Card */}
       <div className="bg-gradient-to-r from-slate-900 to-slate-850 border border-slate-800 rounded-3xl p-4 space-y-2">
         <div className="flex items-center gap-2">
           <Sparkles size={16} className="text-orange-400" />
-          <h4 className="text-xs font-bold text-slate-200">Resumo da Semana com a Calu</h4>
+          <h4 className="text-xs font-bold text-slate-200">Constância com a Calu</h4>
         </div>
         <p className="text-xs text-slate-300 leading-relaxed italic">
-          "Você registrou refeições com consistência em 6 dos últimos 7 dias. Seu consumo de proteína se manteve estável e o consumo de água teve uma melhora notável nos dias úteis!"
+          "Acompanhar sem culpa é o melhor caminho para construir hábitos que duram a vida toda."
         </p>
       </div>
     </div>

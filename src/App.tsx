@@ -6,9 +6,11 @@ import {
   HabitState, 
   WeightLog, 
   MealAnalysisResponse, 
+  MealAnalysisSuccessResponse,
   MealType 
 } from './types';
 import { StorageService, DEFAULT_PROFILE, DEFAULT_GOALS } from './services/storage';
+import { AuthService, AuthSessionUser } from './services/authService';
 import { Header } from './components/Header';
 import { BottomNav, NavTab } from './components/BottomNav';
 import { HomeView } from './views/HomeView';
@@ -24,6 +26,7 @@ import { SearchFoodModal } from './components/SearchFoodModal';
 import { BarcodeModal } from './components/BarcodeModal';
 import { HumanCorrectionModal } from './components/HumanCorrectionModal';
 import { PrivacyModal } from './components/PrivacyModal';
+import { AuthModal } from './components/AuthModal';
 
 export default function App() {
   const todayStr = new Date().toISOString().split('T')[0];
@@ -49,10 +52,34 @@ export default function App() {
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [barcodeModalOpen, setBarcodeModalOpen] = useState(false);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(() => AuthService.getCurrentUser());
+
+  // Listen to Auth State changes
+  useEffect(() => {
+    AuthService.init();
+    const unsub = AuthService.onAuthStateChanged(authUser => {
+      setCurrentUser(authUser);
+      if (authUser) {
+        const p = StorageService.getProfile();
+        if (p.uid !== authUser.uid) {
+          const updated = {
+            ...p,
+            uid: authUser.uid,
+            name: authUser.displayName || p.name,
+            email: authUser.email || undefined,
+          };
+          StorageService.saveProfile(updated);
+          setUser(updated);
+        }
+      }
+    });
+    return unsub;
+  }, []);
 
   // Human Correction Modal State
   const [correctionData, setCorrectionData] = useState<{
-    data: MealAnalysisResponse;
+    data: MealAnalysisSuccessResponse;
     photoUrl?: string;
   } | null>(null);
 
@@ -69,16 +96,23 @@ export default function App() {
     setWaterMl(updated);
   };
 
-  // Habit handler
+  // Habit handler - 3 state cycle
   const handleToggleHabit = (key: keyof HabitState) => {
-    const updated = { ...habits, [key]: !habits[key] };
+    const current = habits[key];
+    const nextState: 'completed' | 'not_completed' | 'not_recorded' =
+      current === 'not_recorded'
+        ? 'completed'
+        : current === 'completed'
+        ? 'not_completed'
+        : 'not_recorded';
+    const updated: HabitState = { ...habits, [key]: nextState };
     setHabits(updated);
     StorageService.saveHabits(selectedDate, updated);
   };
 
   // Weight handler
-  const handleAddWeight = (weightKg: number, date: string, note?: string) => {
-    StorageService.addWeight(weightKg, date, note);
+  const handleAddWeight = (weightKg: number, date: string, notes?: string) => {
+    StorageService.addWeight(weightKg, date, notes);
     setWeights(StorageService.getWeights());
     setUser(StorageService.getProfile());
   };
@@ -110,9 +144,16 @@ export default function App() {
   const handleEditMeal = (meal: Meal) => {
     setCorrectionData({
       data: {
+        success: true,
         mealType: meal.mealType,
         mealNameSuggestion: meal.name,
-        foods: meal.foods,
+        identifiedFoods: meal.foods.map(f => ({
+          name: f.name,
+          estimatedQuantity: f.estimatedQuantity,
+          unit: f.unit,
+          confidence: f.confidence || 1.0,
+        })),
+        calculatedFoods: meal.foods,
         total: {
           calories: meal.totalCalories,
           protein: meal.totalProtein,
@@ -126,26 +167,40 @@ export default function App() {
     });
   };
 
-  // Handler when photo analysis completes -> route to Human Correction
+  // Handler when photo analysis completes -> route to Human Correction if success
   const handlePhotoAnalysisComplete = (data: MealAnalysisResponse, photoUrl?: string) => {
     setPhotoModalOpen(false);
-    setCorrectionData({ data, photoUrl });
+    if (data.success) {
+      setCorrectionData({ data, photoUrl });
+    }
   };
 
-  // Handler when voice analysis completes -> route to Human Correction
+  // Handler when voice analysis completes -> route to Human Correction if success
   const handleVoiceAnalysisComplete = (data: MealAnalysisResponse) => {
     setVoiceModalOpen(false);
-    setCorrectionData({ data });
+    if (data.success) {
+      setCorrectionData({ data });
+    }
   };
 
-  // Handler when text analysis completes -> route to Human Correction
+  // Handler when text analysis completes -> route to Human Correction if success
   const handleTextAnalysisComplete = (data: MealAnalysisResponse) => {
     setTextModalOpen(false);
-    setCorrectionData({ data });
+    if (data.success) {
+      setCorrectionData({ data });
+    }
+  };
+
+  // Open manual search fallback directly
+  const handleOpenManualFromModal = () => {
+    setPhotoModalOpen(false);
+    setVoiceModalOpen(false);
+    setTextModalOpen(false);
+    setSearchModalOpen(true);
   };
 
   // Handler for adding a meal directly from category button in Diary
-  const handleAddMealForCategory = (type: MealType) => {
+  const handleAddMealForCategory = (_type: MealType) => {
     setSearchModalOpen(true);
   };
 
@@ -207,6 +262,7 @@ export default function App() {
         selectedDate={selectedDate}
         onDateChange={setSelectedDate}
         onOpenCoach={() => setCurrentTab('coach')}
+        onOpenAuth={() => setAuthModalOpen(true)}
       />
 
       {/* Main View Container */}
@@ -260,6 +316,7 @@ export default function App() {
             onUpdateProfile={handleUpdateProfile}
             onUpdateGoals={handleUpdateGoals}
             onOpenPrivacy={() => setPrivacyModalOpen(true)}
+            onOpenAuth={() => setAuthModalOpen(true)}
             onRestartOnboarding={handleRestartOnboarding}
           />
         )}
@@ -272,6 +329,7 @@ export default function App() {
       {photoModalOpen && (
         <PhotoCaptureModal
           onAnalysisComplete={handlePhotoAnalysisComplete}
+          onOpenManualEntry={handleOpenManualFromModal}
           onClose={() => setPhotoModalOpen(false)}
         />
       )}
@@ -279,6 +337,7 @@ export default function App() {
       {voiceModalOpen && (
         <VoiceModal
           onAnalysisComplete={handleVoiceAnalysisComplete}
+          onOpenManualEntry={handleOpenManualFromModal}
           onClose={() => setVoiceModalOpen(false)}
         />
       )}
@@ -286,6 +345,7 @@ export default function App() {
       {textModalOpen && (
         <TextModal
           onAnalysisComplete={handleTextAnalysisComplete}
+          onOpenManualEntry={handleOpenManualFromModal}
           onClose={() => setTextModalOpen(false)}
         />
       )}
@@ -315,6 +375,7 @@ export default function App() {
         <HumanCorrectionModal
           initialData={correctionData.data}
           photoUrl={correctionData.photoUrl}
+          uid={user.uid}
           onSave={handleSaveMeal}
           onClose={() => setCorrectionData(null)}
         />
@@ -325,6 +386,14 @@ export default function App() {
         <PrivacyModal
           onClose={() => setPrivacyModalOpen(false)}
           onDataReset={handleDataReset}
+        />
+      )}
+
+      {/* Account & UID Authentication Modal */}
+      {authModalOpen && (
+        <AuthModal
+          currentUser={currentUser}
+          onClose={() => setAuthModalOpen(false)}
         />
       )}
     </div>

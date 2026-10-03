@@ -1,21 +1,18 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Send, 
-  Sparkles, 
   BrainCircuit, 
   Trash2, 
   Plus, 
   X, 
-  Bot, 
-  ShieldAlert, 
   Flame, 
-  Apple, 
-  Clock 
+  EyeOff
 } from 'lucide-react';
 import { ChatMessage, CaluMemoryItem, Meal, NutritionGoals, UserProfile } from '../types';
 import { CaluMascot } from '../components/CaluMascot';
 import { CaluApiService } from '../services/api';
-import { StorageService } from '../services/storage';
+import { repository } from '../repositories/dataRepository';
+import { DateService } from '../services/dateService';
 
 interface CoachViewProps {
   user: UserProfile;
@@ -31,14 +28,26 @@ const QUICK_PROMPTS = [
 ];
 
 export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>(() => StorageService.getChatMessages());
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [
+    {
+      id: 'init_1',
+      sender: 'calu',
+      text: `Olá, ${user.name}! Sou a Calu. Estou aqui para te apoiar com suas refeições e hábitos de hoje sem complicações ou culpas. O que você gostaria de planejar?`,
+      timestamp: DateService.getLocalDateTime(),
+    },
+  ]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
-  const [memories, setMemories] = useState<CaluMemoryItem[]>(() => StorageService.getMemories());
+  const [memories, setMemories] = useState<CaluMemoryItem[]>([]);
   const [newMemoryText, setNewMemoryText] = useState('');
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Load user memories from repository on mount
+  useEffect(() => {
+    repository.getMemories(user.uid).then(setMemories);
+  }, [user.uid]);
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,11 +57,9 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
     scrollToBottom();
   }, [messages, isSending]);
 
-  // Aggregate user today context
-  const totalCalories = meals.reduce((acc, m) => acc + m.totalCalories, 0);
-  const totalProtein = Number(meals.reduce((acc, m) => acc + m.totalProtein, 0).toFixed(1));
+  const totalCalories = meals.reduce((acc, m) => acc + (m.totalCalories || 0), 0);
+  const totalProtein = Number(meals.reduce((acc, m) => acc + (m.totalProtein || 0), 0).toFixed(1));
   const remainingCalories = Math.max(0, goals.calories - totalCalories);
-  const remainingProtein = Math.max(0, goals.protein - totalProtein);
 
   const todayMealsSummary = meals.length > 0
     ? meals.map(m => `${m.name} (${m.totalCalories} kcal, ${m.totalProtein}g prot)`).join('; ')
@@ -66,12 +73,11 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
       id: 'msg_user_' + Date.now(),
       sender: 'user',
       text: query,
-      timestamp: new Date().toISOString(),
+      timestamp: DateService.getLocalDateTime(),
     };
 
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
-    StorageService.saveChatMessages(updatedMessages);
     setInputText('');
     setIsSending(true);
 
@@ -85,7 +91,7 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
         targetProtein: goals.protein,
         consumedProtein: totalProtein,
         todayMealsSummary,
-        memories: memories.map(m => m.content),
+        memories: memories.filter(m => m.isActive).map(m => m.content),
       };
 
       const reply = await CaluApiService.chatWithCalu(updatedMessages, userContext);
@@ -94,36 +100,45 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
         id: 'msg_calu_' + Date.now(),
         sender: 'calu',
         text: reply,
-        timestamp: new Date().toISOString(),
+        timestamp: DateService.getLocalDateTime(),
       };
 
-      const finalMessages = [...updatedMessages, caluMsg];
-      setMessages(finalMessages);
-      StorageService.saveChatMessages(finalMessages);
-    } catch (err: any) {
-      console.error(err);
-      const errorMsg: ChatMessage = {
+      setMessages([...updatedMessages, caluMsg]);
+    } catch {
+      const fallbackMsg: ChatMessage = {
         id: 'msg_err_' + Date.now(),
         sender: 'calu',
-        text: 'Não consegui me conectar aos servidores agora. Verifique sua conexão e tente novamente.',
-        timestamp: new Date().toISOString(),
+        text: 'Tive uma breve oscilação de conexão, mas continuo aqui com você! Pode tentar me perguntar novamente.',
+        timestamp: DateService.getLocalDateTime(),
       };
-      setMessages(prev => [...prev, errorMsg]);
+      setMessages(prev => [...prev, fallbackMsg]);
     } finally {
       setIsSending(false);
     }
   };
 
-  const handleAddMemory = () => {
+  const handleAddMemory = async () => {
     if (!newMemoryText.trim()) return;
-    StorageService.addMemory(newMemoryText.trim(), 'preferencia');
-    setMemories(StorageService.getMemories());
+    const newMem: CaluMemoryItem = {
+      id: 'mem_' + Date.now(),
+      uid: user.uid,
+      content: newMemoryText.trim(),
+      category: 'preferencia',
+      source: 'usuario',
+      isActive: true,
+      createdAt: DateService.getLocalDate(),
+      updatedAt: DateService.getLocalDateTime(),
+    };
+    await repository.saveMemory(newMem);
+    const updated = await repository.getMemories(user.uid);
+    setMemories(updated);
     setNewMemoryText('');
   };
 
-  const handleDeleteMemory = (id: string) => {
-    StorageService.deleteMemory(id);
-    setMemories(StorageService.getMemories());
+  const handleDeleteMemory = async (id: string) => {
+    await repository.deleteMemory(user.uid, id);
+    const updated = await repository.getMemories(user.uid);
+    setMemories(updated);
   };
 
   return (
@@ -140,24 +155,23 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Acolhedora • Sem culpa • Contexto do seu dia
+              Acolhedora • Sem julgamento • Respostas reais
             </p>
           </div>
         </div>
 
-        {/* Calu Memory Button */}
         <button
           type="button"
           onClick={() => setShowMemoryModal(true)}
           className="p-2 rounded-2xl bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700/80 flex items-center gap-1.5 text-xs transition-colors"
-          title="Ver o que a Calu lembra sobre você"
+          title="Ver memórias da Calu"
         >
           <BrainCircuit size={15} className="text-orange-400" />
           <span className="font-semibold text-[11px]">Memória</span>
         </button>
       </div>
 
-      {/* Real-time Context Strip for transparency */}
+      {/* Context Strip */}
       <div className="bg-slate-950 border border-slate-800/80 rounded-2xl px-3 py-2 flex items-center justify-between text-[11px] text-slate-400 shrink-0">
         <span className="flex items-center gap-1">
           <Flame size={12} className="text-orange-400" />
@@ -168,7 +182,7 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
           Proteína: <b className="text-slate-200">{totalProtein}g</b> / {goals.protein}g
         </span>
         <span>•</span>
-        <span>{meals.length} refeições</span>
+        <span>{meals.length} {meals.length === 1 ? 'refeição' : 'refeições'}</span>
       </div>
 
       {/* Chat Messages Box */}
@@ -187,7 +201,7 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
             )}
 
             <div
-              className={`max-w-[82%] rounded-2xl p-3.5 text-xs leading-relaxed ${
+              className={`max-w-[82%] rounded-2xl p-3.5 text-xs leading-relaxed whitespace-pre-line ${
                 msg.sender === 'user'
                   ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-slate-950 font-medium rounded-tr-none shadow-md shadow-orange-500/10'
                   : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none shadow-md'
@@ -205,7 +219,7 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
               <span className="w-2 h-2 rounded-full bg-orange-400 animate-bounce" />
               <span className="w-2 h-2 rounded-full bg-orange-400 animate-bounce delay-150" />
               <span className="w-2 h-2 rounded-full bg-orange-400 animate-bounce delay-300" />
-              <span className="text-[11px] ml-1">Calu pensando no seu contexto...</span>
+              <span className="text-[11px] ml-1">Calu analisando seu contexto...</span>
             </div>
           </div>
         )}
@@ -251,7 +265,7 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
         </button>
       </div>
 
-      {/* Memory Modal Drawer */}
+      {/* Memory Modal Drawer (Section 22: Persistent, editable, deactivatable, erasable) */}
       {showMemoryModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col justify-end sm:justify-center items-center p-0 sm:p-4 animate-fadeIn">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
@@ -275,16 +289,15 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
 
             <div className="p-5 overflow-y-auto space-y-4">
               <p className="text-xs text-slate-300 leading-relaxed">
-                A Calu aprende <b>apenas</b> com o que você compartilha expressamente. Você pode visualizar, adicionar novas notas ou excluir qualquer memória a qualquer momento.
+                A Calu lembra apenas do que você autoriza expressamente. Se quiser que ela esqueça qualquer item, basta tocar no ícone de lixeira.
               </p>
 
-              {/* Add Memory Input */}
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={newMemoryText}
                   onChange={e => setNewMemoryText(e.target.value)}
-                  placeholder="Ex: Não gosto de peixe / Treino às 18h"
+                  placeholder="Ex: Prefiro café sem açúcar / Treino pela manhã"
                   className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-orange-500"
                   onKeyDown={e => e.key === 'Enter' && handleAddMemory()}
                 />
@@ -297,29 +310,34 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
                 </button>
               </div>
 
-              {/* Memory Items List */}
               <div className="space-y-2">
-                {memories.map(mem => (
-                  <div
-                    key={mem.id}
-                    className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between text-xs"
-                  >
-                    <div>
-                      <p className="font-medium text-slate-200">{mem.content}</p>
-                      <span className="text-[10px] text-slate-500 capitalize">
-                        {mem.category} • Criado em {mem.createdAt}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteMemory(mem.id)}
-                      className="text-slate-500 hover:text-rose-400 p-1.5 rounded-lg transition-colors"
-                      title="Excluir preferência"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                {memories.length === 0 ? (
+                  <div className="text-center py-6 text-xs text-slate-500 border border-dashed border-slate-800 rounded-2xl">
+                    Nenhuma memória personalizada salva ainda. Adicione acima se desejar.
                   </div>
-                ))}
+                ) : (
+                  memories.map(mem => (
+                    <div
+                      key={mem.id}
+                      className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <p className="font-medium text-slate-200">{mem.content}</p>
+                        <span className="text-[10px] text-slate-500 capitalize">
+                          {mem.category} • Adicionado em {mem.createdAt}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMemory(mem.id)}
+                        className="text-slate-500 hover:text-rose-400 p-1.5 rounded-lg transition-colors"
+                        title="Esquecer esta memória"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 

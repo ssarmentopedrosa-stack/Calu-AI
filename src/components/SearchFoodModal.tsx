@@ -2,6 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { Search, X, Plus, Check, ChevronRight } from 'lucide-react';
 import { BRAZILIAN_FOODS, BrazilianFood } from '../data/brazilianFoods';
 import { FoodItem, Meal, MealType } from '../types';
+import { AuthService } from '../services/authService';
+import { DateService } from '../services/dateService';
 
 interface SearchFoodModalProps {
   onAddMeal: (meal: Meal) => void;
@@ -71,6 +73,7 @@ export const SearchFoodModal: React.FC<SearchFoodModalProps> = ({ onAddMeal, onC
         carbohydrates: Number((food.carbsPer100g * ratio).toFixed(1)),
         fat: Number((food.fatPer100g * ratio).toFixed(1)),
         fiber: Number((food.fiberPer100g * ratio).toFixed(1)),
+        source: 'TACO - Tabela Brasileira de Composição de Alimentos',
       };
       setBasket(prev => [...prev, newItem]);
     }
@@ -89,22 +92,29 @@ export const SearchFoodModal: React.FC<SearchFoodModalProps> = ({ onAddMeal, onC
   const handleFinish = () => {
     if (basket.length === 0) return;
 
+    const currentUid = AuthService.getCurrentUser()?.uid || 'usr_local_default';
+    const nowIso = new Date().toISOString();
+
     const meal: Meal = {
       id: 'meal_search_' + Date.now(),
+      uid: currentUid,
       name:
         basket.length === 1
           ? basket[0].name
           : `Refeição com ${basket[0].name} +${basket.length - 1}`,
       mealType: selectedMealType,
-      time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-      date: new Date().toISOString().split('T')[0],
+      time: DateService.getLocalTime(),
+      date: DateService.getLocalDate(),
+      timestamp: nowIso,
       foods: basket,
       totalCalories: totalBasketCalories,
       totalProtein: totalBasketProtein,
       totalCarbohydrates: totalBasketCarbs,
       totalFat: totalBasketFat,
       totalFiber: totalBasketFiber,
-      createdAt: new Date().toISOString(),
+      userConfirmed: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     onAddMeal(meal);

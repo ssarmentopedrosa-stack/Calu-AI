@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Barcode, X, Search, Check, AlertCircle, ShoppingBag } from 'lucide-react';
 import { BRAZILIAN_BARCODES } from '../data/barcodeDatabase';
-import { BarcodeProduct, Meal, MealType } from '../types';
+import { BarcodeProduct, FoodItem, Meal, MealType } from '../types';
+import { AuthService } from '../services/authService';
+import { DateService } from '../services/dateService';
 
 interface BarcodeModalProps {
   onAddMeal: (meal: Meal) => void;
@@ -34,7 +36,7 @@ export const BarcodeModal: React.FC<BarcodeModalProps> = ({ onAddMeal, onClose }
     if (!scannedProduct) return;
 
     const ratio = servingsCount;
-    const foodItem = {
+    const foodItem: FoodItem = {
       id: 'barcode_item_' + Date.now(),
       name: `${scannedProduct.name} (${scannedProduct.brand})`,
       estimatedQuantity: scannedProduct.servingSize * ratio,
@@ -45,21 +47,29 @@ export const BarcodeModal: React.FC<BarcodeModalProps> = ({ onAddMeal, onClose }
       carbohydrates: Number((scannedProduct.carbohydrates * ratio).toFixed(1)),
       fat: Number((scannedProduct.fat * ratio).toFixed(1)),
       fiber: Number((scannedProduct.fiber * ratio).toFixed(1)),
+      source: scannedProduct.source || 'Rótulo do Fabricante / Base EAN-13',
     };
+
+    const currentUid = AuthService.getCurrentUser()?.uid || 'usr_local_default';
+    const nowIso = new Date().toISOString();
 
     const meal: Meal = {
       id: 'meal_barcode_' + Date.now(),
+      uid: currentUid,
       name: scannedProduct.name,
       mealType,
-      time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-      date: new Date().toISOString().split('T')[0],
+      time: DateService.getLocalTime(),
+      date: DateService.getLocalDate(),
+      timestamp: nowIso,
       foods: [foodItem],
       totalCalories: foodItem.calories,
       totalProtein: foodItem.protein,
       totalCarbohydrates: foodItem.carbohydrates,
       totalFat: foodItem.fat,
       totalFiber: foodItem.fiber,
-      createdAt: new Date().toISOString(),
+      userConfirmed: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     onAddMeal(meal);

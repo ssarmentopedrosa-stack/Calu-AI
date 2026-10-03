@@ -9,7 +9,6 @@ import {
   Sparkles, 
   Plus, 
   ChevronRight, 
-  CheckCircle2, 
   Flame, 
   RefreshCw,
   Clock
@@ -49,18 +48,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onOpenCoach,
   onNavigateToDiary,
 }) => {
-  // Aggregate daily nutrients from registered meals
-  const totalCalories = meals.reduce((acc, m) => acc + m.totalCalories, 0);
-  const totalProtein = Number(meals.reduce((acc, m) => acc + m.totalProtein, 0).toFixed(1));
-  const totalCarbs = Number(meals.reduce((acc, m) => acc + m.totalCarbohydrates, 0).toFixed(1));
-  const totalFat = Number(meals.reduce((acc, m) => acc + m.totalFat, 0).toFixed(1));
+  // Aggregate real daily nutrients from meals
+  const totalCalories = meals.reduce((acc, m) => acc + (m.totalCalories || 0), 0);
+  const totalProtein = Number(meals.reduce((acc, m) => acc + (m.totalProtein || 0), 0).toFixed(1));
+  const totalCarbs = Number(meals.reduce((acc, m) => acc + (m.totalCarbohydrates || 0), 0).toFixed(1));
+  const totalFat = Number(meals.reduce((acc, m) => acc + (m.totalFat || 0), 0).toFixed(1));
 
   const [dailyInsight, setDailyInsight] = useState<string>(
-    'Hoje seu ritmo de acompanhamento está ótimo! Você já registrou as principais refeições do seu dia.'
+    meals.length === 0
+      ? 'Comece seu dia registrando sua primeira refeição ou copo d’água! A Calu acompanha você sem julgamentos.'
+      : 'Hoje seu ritmo de acompanhamento está ótimo! Você já registrou as principais refeições do seu dia.'
   );
   const [loadingInsight, setLoadingInsight] = useState(false);
 
-  // Fetch or refresh AI insight
   const fetchInsight = async () => {
     setLoadingInsight(true);
     try {
@@ -87,7 +87,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
   return (
     <div className="pb-24 pt-2 px-4 max-w-md mx-auto space-y-5 animate-fadeIn">
-      {/* Subtitle / Question */}
+      {/* Subtitle / Day status */}
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-400 font-medium">Como está sua alimentação hoje?</p>
         <span className="text-[11px] text-orange-400/90 bg-orange-500/10 px-2 py-0.5 rounded-full font-semibold">
@@ -97,7 +97,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
       {/* Main Calories & Macros Card */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-        {/* Subtle background glow */}
         <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-2xl pointer-events-none" />
 
         <div className="flex items-start justify-between mb-4">
@@ -111,17 +110,10 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
           </div>
 
-          {/* Calorie Ring / Percentage Badge */}
+          {/* Calorie Ring */}
           <div className="relative w-14 h-14 flex items-center justify-center">
             <svg className="w-14 h-14 -rotate-90 transform" viewBox="0 0 36 36">
-              <circle
-                cx="18"
-                cy="18"
-                r="15"
-                fill="none"
-                stroke="#1e293b"
-                strokeWidth="3.5"
-              />
+              <circle cx="18" cy="18" r="15" fill="none" stroke="#1e293b" strokeWidth="3.5" />
               <circle
                 cx="18"
                 cy="18"
@@ -148,7 +140,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
         {/* Macros Progress Bars */}
         <div className="grid grid-cols-3 gap-3 pt-3 border-t border-slate-800/80">
-          {/* Protein */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[11px]">
               <span className="font-semibold text-slate-300">Proteína</span>
@@ -163,7 +154,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <span className="text-[9px] text-slate-500 block">meta: {goals.protein}g</span>
           </div>
 
-          {/* Carbs */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[11px]">
               <span className="font-semibold text-slate-300">Carbos</span>
@@ -178,7 +168,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <span className="text-[9px] text-slate-500 block">meta: {goals.carbohydrates}g</span>
           </div>
 
-          {/* Fat */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[11px]">
               <span className="font-semibold text-slate-300">Gorduras</span>
@@ -213,7 +202,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </div>
         </div>
 
-        {/* Quick Add Water Buttons */}
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -232,15 +220,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </div>
       </div>
 
-      {/* Primary Action Buttons: "Registrar Refeição" */}
+      {/* 5 Big Action Buttons */}
       <div className="space-y-2.5">
         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
           Registrar Refeição
         </h3>
 
-        {/* Big Grid of 5 Capture Modes */}
         <div className="grid grid-cols-2 gap-2.5">
-          {/* 1. Foto (Highlighted) */}
           <button
             type="button"
             onClick={onOpenPhoto}
@@ -253,14 +239,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <div className="text-left">
                 <h4 className="text-sm font-extrabold tracking-tight">Fotografar refeição</h4>
                 <p className="text-[11px] font-medium text-slate-950/80">
-                  A IA analisa seu prato e porções
+                  Identificação com IA e cálculo pela base TACO
                 </p>
               </div>
             </div>
             <Sparkles size={18} className="text-slate-950 group-hover:rotate-12 transition-transform" />
           </button>
 
-          {/* 2. Voz */}
           <button
             type="button"
             onClick={onOpenVoice}
@@ -275,7 +260,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
           </button>
 
-          {/* 3. Texto */}
           <button
             type="button"
             onClick={onOpenText}
@@ -290,7 +274,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
           </button>
 
-          {/* 4. Buscar alimento */}
           <button
             type="button"
             onClick={onOpenSearch}
@@ -301,11 +284,10 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
             <div>
               <h4 className="text-xs font-bold text-slate-200">Buscar</h4>
-              <p className="text-[10px] text-slate-400">Tabela brasileira</p>
+              <p className="text-[10px] text-slate-400">Tabela TACO oficial</p>
             </div>
           </button>
 
-          {/* 5. Código de barras */}
           <button
             type="button"
             onClick={onOpenBarcode}
@@ -316,7 +298,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
             <div>
               <h4 className="text-xs font-bold text-slate-200">Código de Barras</h4>
-              <p className="text-[10px] text-slate-400">Embalados</p>
+              <p className="text-[10px] text-slate-400">Embalados (EAN-13)</p>
             </div>
           </button>
         </div>
@@ -346,7 +328,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
         <div className="mt-3 pt-2.5 border-t border-slate-800 flex items-center justify-between">
           <span className="text-[10px] text-slate-500">
-            Baseado no seu diário de hoje
+            {meals.length > 0 ? 'Baseado no seu diário de hoje' : 'Sem dados registrados hoje'}
           </span>
           <button
             type="button"
@@ -370,7 +352,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             onClick={onNavigateToDiary}
             className="text-xs font-semibold text-orange-400 hover:text-orange-300 flex items-center gap-0.5"
           >
-            <span>Ver diário completo</span>
+            <span>Ver diário</span>
             <ChevronRight size={14} />
           </button>
         </div>
@@ -378,11 +360,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
         {meals.length === 0 ? (
           <div className="p-6 rounded-2xl bg-slate-900/60 border border-dashed border-slate-800 text-center space-y-2">
             <span className="text-2xl block">🍽️</span>
-            <p className="text-xs font-medium text-slate-400">
+            <p className="text-xs font-medium text-slate-300">
               Nenhuma refeição registrada hoje ainda.
             </p>
             <p className="text-[11px] text-slate-500">
-              Tire uma foto do seu prato ou descreva sua comida com voz ou texto!
+              Tire uma foto, fale ou descreva sua comida para começar!
             </p>
           </div>
         ) : (
@@ -417,7 +399,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                     {meal.totalCalories} kcal
                   </span>
                   <span className="block text-[10px] text-slate-500">
-                    {meal.totalProtein}g proteína
+                    {meal.totalProtein}g prot
                   </span>
                 </div>
               </div>

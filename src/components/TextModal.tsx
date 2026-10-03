@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { PenLine, X, Sparkles, RefreshCw, AlertCircle, Lightbulb } from 'lucide-react';
+import { PenLine, X, Sparkles, RefreshCw, AlertCircle, Lightbulb, Edit3 } from 'lucide-react';
 import { CaluApiService } from '../services/api';
-import { MealAnalysisResponse } from '../types';
+import { MealAnalysisSuccessResponse } from '../types';
 
 interface TextModalProps {
-  onAnalysisComplete: (data: MealAnalysisResponse) => void;
+  onAnalysisComplete: (data: MealAnalysisSuccessResponse) => void;
+  onOpenManualEntry: () => void;
   onClose: () => void;
 }
 
@@ -12,29 +13,42 @@ const TEXT_SUGGESTIONS = [
   'Comi 2 ovos mexidos, 2 fatias de pão integral e 1 xícara de café com leite',
   'Almocei arroz branco, feijão carioca, peito de frango grelhado e salada verde',
   'Comi 1 tapioca recheada com queijo coalho e tomei café sem açúcar',
-  'Lanchei 1 pote de iogurte natural com 1 banana prata e 1 colher de mel',
+  'Lanchei 1 pote de iogurte natural com 1 banana prata',
 ];
 
 export const TextModal: React.FC<TextModalProps> = ({
   onAnalysisComplete,
+  onOpenManualEntry,
   onClose,
 }) => {
   const [text, setText] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<{ message: string; showManualFallback: boolean } | null>(null);
 
   const handleAnalyze = async () => {
     if (!text.trim()) return;
 
     setIsAnalyzing(true);
-    setErrorMsg(null);
+    setErrorInfo(null);
 
     try {
       const result = await CaluApiService.analyzeText(text.trim());
-      onAnalysisComplete(result);
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || 'Erro ao interpretar a refeição.');
+
+      if (result.success) {
+        onAnalysisComplete(result);
+      } else {
+        // Section 3: Do NOT invent fake food. Display human error with options
+        setErrorInfo({
+          message: result.message || 'Não consegui analisar essa refeição com segurança.',
+          showManualFallback: true,
+        });
+        setIsAnalyzing(false);
+      }
+    } catch {
+      setErrorInfo({
+        message: 'Não consegui analisar essa refeição com segurança.',
+        showManualFallback: true,
+      });
       setIsAnalyzing(false);
     }
   };
@@ -50,7 +64,7 @@ export const TextModal: React.FC<TextModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-100">Descrever Refeição</h2>
-              <p className="text-xs text-slate-400">A Calu extrai alimentos, porções e macros</p>
+              <p className="text-xs text-slate-400">A Calu extrai alimentos e cruza com a tabela TACO</p>
             </div>
           </div>
           <button
@@ -63,10 +77,38 @@ export const TextModal: React.FC<TextModalProps> = ({
 
         {/* Content */}
         <div className="p-5 overflow-y-auto space-y-4">
-          {errorMsg && (
-            <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl flex items-center gap-2 text-rose-300 text-xs">
-              <AlertCircle size={16} className="shrink-0" />
-              <span>{errorMsg}</span>
+          {errorInfo && (
+            <div className="p-4 bg-rose-500/15 border border-rose-500/30 rounded-2xl space-y-2.5 text-xs text-rose-300">
+              <div className="flex items-center gap-2">
+                <AlertCircle size={18} className="shrink-0 text-rose-400" />
+                <span className="font-semibold">{errorInfo.message}</span>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorInfo(null);
+                    handleAnalyze();
+                  }}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold flex items-center gap-1.5"
+                >
+                  <RefreshCw size={13} />
+                  <span>Tentar novamente</span>
+                </button>
+                {errorInfo.showManualFallback && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenManualEntry();
+                    }}
+                    className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-slate-950 rounded-xl font-bold flex items-center gap-1.5"
+                  >
+                    <Edit3 size={13} />
+                    <span>Registrar manualmente</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -84,7 +126,6 @@ export const TextModal: React.FC<TextModalProps> = ({
             />
           </div>
 
-          {/* Quick Suggestion Chips */}
           <div>
             <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
               <Lightbulb size={13} className="text-amber-400" />

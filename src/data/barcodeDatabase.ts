@@ -12,7 +12,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 9.4,
     fat: 6.4,
     fiber: 0.0,
-    category: 'Laticínios'
+    category: 'Laticínios',
+    source: 'Rótulo Oficial Nestlé Brasil',
   },
   '7891025114536': {
     barcode: '7891025114536',
@@ -25,7 +26,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 9.2,
     fat: 5.6,
     fiber: 0.0,
-    category: 'Laticínios'
+    category: 'Laticínios',
+    source: 'Rótulo Oficial Danone',
   },
   '7896005801234': {
     barcode: '7896005801234',
@@ -38,7 +40,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 15.0,
     fat: 2.5,
     fiber: 1.8,
-    category: 'Snacks'
+    category: 'Snacks',
+    source: 'Rótulo Oficial Nutry',
   },
   '7891000053508': {
     barcode: '7891000053508',
@@ -51,7 +54,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 17.0,
     fat: 2.2,
     fiber: 2.9,
-    category: 'Cereais'
+    category: 'Cereais',
+    source: 'Rótulo Oficial Quaker',
   },
   '7896001200456': {
     barcode: '7896001200456',
@@ -64,7 +68,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 19.0,
     fat: 1.8,
     fiber: 4.5,
-    category: 'Padaria'
+    category: 'Padaria',
+    source: 'Rótulo Oficial Wickbold',
   },
   '7898565770112': {
     barcode: '7898565770112',
@@ -77,7 +82,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 4.6,
     fat: 2.1,
     fiber: 0.0,
-    category: 'Suplementos'
+    category: 'Suplementos',
+    source: 'Rótulo Oficial Max Titanium',
   },
   '7896006711921': {
     barcode: '7896006711921',
@@ -90,7 +96,8 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 20.0,
     fat: 4.2,
     fiber: 0.9,
-    category: 'Snacks'
+    category: 'Snacks',
+    source: 'Rótulo Oficial Vitarella',
   },
   '7898080640001': {
     barcode: '7898080640001',
@@ -103,6 +110,7 @@ export const BRAZILIAN_BARCODES: Record<string, BarcodeProduct> = {
     carbohydrates: 0.9,
     fat: 4.8,
     fiber: 0.0,
-    category: 'Laticínios'
-  }
+    category: 'Laticínios',
+    source: 'Rótulo Oficial Tirolez',
+  },
 };
