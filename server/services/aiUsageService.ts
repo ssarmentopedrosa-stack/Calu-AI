@@ -8,18 +8,23 @@ export type AIActionType = 'mealAnalysis' | 'chat' | 'dailyInsight';
 export interface QuotaCheckResult {
   allowed: boolean;
   remaining: number;
+  reservationId?: string;
   reason?: 'RATE_LIMITED' | 'QUOTA_UNAVAILABLE' | 'LIMIT_EXCEEDED';
 }
 
 // In-memory atomic store used strictly for test/dev environments when Firebase Admin credentials are not attached
 const inMemoryQuotaStore: Map<string, { mealAnalyses: number; chatMessages: number; dailyInsights: number }> = new Map();
 
+// Active reservation set to strictly prevent double refunds
+const activeReservations: Set<string> = new Set();
+
 export class ServerAIUsageService {
   /**
-   * Resets in-memory quota store (useful for automated testing)
+   * Resets in-memory quota store and reservations (useful for automated testing)
    */
   static resetInMemoryStore() {
     inMemoryQuotaStore.clear();
+    activeReservations.clear();
   }
 
   /**
@@ -72,7 +77,9 @@ export class ServerAIUsageService {
       else userUsage.dailyInsights += 1;
 
       inMemoryQuotaStore.set(key, userUsage);
-      return { allowed: true, remaining: maxLimit - (currentCount + 1) };
+      const reservationId = `res_${uid}_${action}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      activeReservations.add(reservationId);
+      return { allowed: true, remaining: maxLimit - (currentCount + 1), reservationId };
     }
 
     const db = getAdminDb();
@@ -118,7 +125,10 @@ export class ServerAIUsageService {
 
         transaction.set(docRef, updatePayload, { merge: true });
 
-        return { allowed: true, remaining: Math.max(0, maxLimit - newCount) };
+        const reservationId = `res_${uid}_${action}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        activeReservations.add(reservationId);
+
+        return { allowed: true, remaining: Math.max(0, maxLimit - newCount), reservationId };
       });
 
       return result;
@@ -165,8 +175,17 @@ export class ServerAIUsageService {
    * Safely refunds a reserved quota action if the downstream AI provider
    * encounters an unrecoverable internal infrastructure failure.
    * Atomic and prevents negative values.
+   * Strictly prevents double refunding by validating reservationId.
    */
-  static async refundAction(uid: string, action: AIActionType): Promise<void> {
+  static async refundAction(uid: string, action: AIActionType, reservationId?: string): Promise<boolean> {
+    if (reservationId) {
+      if (!activeReservations.has(reservationId)) {
+        // Safe idempotent no-op: already refunded or invalid reservation
+        return false;
+      }
+      activeReservations.delete(reservationId);
+    }
+
     const todayDate = DateService.getLocalDate();
 
     if (!isFirebaseAdminReady()) {
@@ -178,7 +197,7 @@ export class ServerAIUsageService {
         else if (action === 'dailyInsight' && record.dailyInsights > 0) record.dailyInsights -= 1;
         inMemoryQuotaStore.set(key, record);
       }
-      return;
+      return true;
     }
 
     try {
@@ -207,8 +226,10 @@ export class ServerAIUsageService {
           transaction.set(docRef, updatePayload, { merge: true });
         }
       });
+      return true;
     } catch (err: any) {
       console.error('[ServerAIUsageService] Falha ao estornar quota:', err.message);
+      return false;
     }
   }
 }

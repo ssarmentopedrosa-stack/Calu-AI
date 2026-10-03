@@ -25,7 +25,7 @@ export class CaluApiService {
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.2.2' };
+      return { status: 'offline', version: '2.2.3' };
     }
   }
 

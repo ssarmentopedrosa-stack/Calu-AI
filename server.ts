@@ -91,16 +91,42 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// 2. Security Headers via Helmet (Phase 21)
+// 2. Security Headers via Helmet (Phase 10 & 21)
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Vite dev server and camera previews require relaxed CSP
+    contentSecurityPolicy:
+      process.env.NODE_ENV === 'production'
+        ? {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: ["'self'", "'unsafe-inline'"],
+              styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+              fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+              imgSrc: [
+                "'self'",
+                'data:',
+                'blob:',
+                'https://*.googleusercontent.com',
+                'https://*.firebaseapp.com',
+                'https://firebasestorage.googleapis.com',
+              ],
+              connectSrc: [
+                "'self'",
+                'https://*.googleapis.com',
+                'https://*.firebaseio.com',
+                'https://identitytoolkit.googleapis.com',
+              ],
+              frameSrc: ["'self'", 'https://*.firebaseapp.com'],
+              objectSrc: ["'none'"],
+            },
+          }
+        : false, // Vite dev server and camera previews require relaxed CSP in dev
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   })
 );
 
-// 3. Explicit CORS: in production, strictly allow only authorized origins (Phase 20)
+// 3. Explicit CORS: in production, strictly allow only authorized origins (Phase 10 & 20)
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -124,11 +150,11 @@ app.use(
   })
 );
 
-// 4. Body parsers with strict size limits (Phase 29)
+// 4. Body parsers with strict size limits (Phase 4 & 20)
 app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 
-// 5. Rate Limiting Categories (Phase 12)
+// 5. Rate Limiting Categories (Phase 5 & 12)
 const publicRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 120, // 120 requests per 15 min
@@ -143,11 +169,19 @@ const publicRateLimiter = rateLimit({
   },
 });
 
+// Expensive AI Rate Limiter binds to both IP and UID to prevent IP-hopping abuse
 const expensiveAiRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 40, // 40 AI analysis/chat calls per 15 min window
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      return `${req.ip}_${authHeader.slice(7, 27)}`;
+    }
+    return req.ip || 'unknown';
+  },
   message: {
     success: false,
     error: {
@@ -170,6 +204,32 @@ const userAccountRateLimiter = rateLimit({
     },
   },
 });
+
+// Idempotency cache with 5-minute TTL to prevent duplicate AI operations on client retries (Phase 7)
+const idempotencyCache = new Map<string, { body: any; expiresAt: number }>();
+
+function checkIdempotency(req: AuthenticatedRequest, res: Response): boolean {
+  const key = req.headers['x-idempotency-key'];
+  if (!key || typeof key !== 'string') return false;
+  const cacheKey = `${req.user!.uid}_${key.trim()}`;
+  const cached = idempotencyCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    res.setHeader('X-Cache-Lookup', 'HIT');
+    res.json(cached.body);
+    return true;
+  }
+  return false;
+}
+
+function saveIdempotency(req: AuthenticatedRequest, body: any) {
+  const key = req.headers['x-idempotency-key'];
+  if (!key || typeof key !== 'string') return;
+  const cacheKey = `${req.user!.uid}_${key.trim()}`;
+  idempotencyCache.set(cacheKey, {
+    body,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
+}
 
 // Calu AI Internal Personality & Clinical Safety Guidelines
 const CALU_SYSTEM_PROMPT = `
@@ -488,20 +548,24 @@ function getAIProvider(): AIProvider {
 
 const aiProvider = getAIProvider();
 
-// Zod Validation Schemas (Phases 9 & 29)
-const photoAnalysisSchema = z.object({
-  imageBase64: z
-    .string()
-    .min(20, 'Imagem em formato inválido')
-    .max(MAX_IMAGE_BASE64_LENGTH, 'Imagem excede o limite máximo permitido de 5MB.'),
-  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).default('image/jpeg'),
-  userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
-});
+// Zod Validation Schemas (Phases 4 & 18 - Strict anti-pollution schemas)
+const photoAnalysisSchema = z
+  .object({
+    imageBase64: z
+      .string()
+      .min(20, 'Imagem em formato inválido')
+      .max(MAX_IMAGE_BASE64_LENGTH, 'Imagem excede o limite máximo permitido de 5MB.'),
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).default('image/jpeg'),
+    userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
+  })
+  .strict();
 
-const textAnalysisSchema = z.object({
-  text: z.string().min(2, 'Descrição muito curta').max(500, 'Descrição excede o limite de 500 caracteres.'),
-  userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
-});
+const textAnalysisSchema = z
+  .object({
+    text: z.string().min(2, 'Descrição muito curta').max(500, 'Descrição excede o limite de 500 caracteres.'),
+    userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
+  })
+  .strict();
 
 const chatRequestSchema = z
   .object({
@@ -522,6 +586,7 @@ const chatRequestSchema = z
       .max(30)
       .optional(),
   })
+  .strict()
   .refine(data => Boolean(data.message || (data.messages && data.messages.length > 0)), {
     message: 'Texto da mensagem é obrigatório.',
   });
@@ -596,10 +661,12 @@ app.post(
         });
       }
 
+      if (checkIdempotency(req, res)) return;
+
       const { imageBase64, mimeType, userNotes } = parseResult.data;
       const uid = req.user!.uid;
 
-      // Server-side AI Quota check in Firestore: STRICT FAIL-CLOSED (Phase 11)
+      // Server-side AI Quota check in Firestore: STRICT FAIL-CLOSED (Phase 6 & 11)
       const rateCheck = await ServerAIUsageService.checkAndIncrement(
         uid,
         'mealAnalysis',
@@ -626,62 +693,68 @@ app.post(
         });
       }
 
-      // Call AI Provider to identify foods
-      const aiResult = await aiProvider.analyzeMealImage(imageBase64, mimeType, userNotes);
+      try {
+        // Call AI Provider to identify foods
+        const aiResult = await aiProvider.analyzeMealImage(imageBase64, mimeType, userNotes);
 
-      if (
-        !aiResult ||
-        !aiResult.isFood ||
-        !aiResult.identifiedFoods ||
-        aiResult.identifiedFoods.length === 0
-      ) {
-        return res.status(422).json({
-          success: false,
-          error: {
-            code: ERROR_CODES.AI_ANALYSIS_FAILED,
-            message: 'Não consegui analisar essa refeição com segurança.',
-          },
-        });
+        if (
+          !aiResult ||
+          !aiResult.isFood ||
+          !aiResult.identifiedFoods ||
+          aiResult.identifiedFoods.length === 0
+        ) {
+          return res.status(422).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.AI_ANALYSIS_FAILED,
+              message: 'Não consegui analisar essa refeição com segurança.',
+            },
+          });
+        }
+
+        // Enrich identified foods with deterministic TACO calculations & confidence tiers
+        const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
+          aiResult.identifiedFoods
+        );
+
+        // If no foods could be matched in database, prompt manual confirmation instead of fabricating
+        if (calculatedFoods.length === 0) {
+          return res.status(422).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.NOT_FOUND,
+              message: 'Alimentos identificados precisam de conferência manual de nutrientes.',
+            },
+            identifiedNames: unmatchedFoods,
+          });
+        }
+
+        const totals = NutritionCalculator.calculateTotals(calculatedFoods);
+
+        const uncertainties = aiResult.uncertainties || [];
+        if (unmatchedFoods.length > 0) {
+          uncertainties.push(`Alimentos a confirmar manualmente: ${unmatchedFoods.join(', ')}`);
+        }
+
+        const responsePayload = {
+          success: true,
+          mealType: aiResult.mealType || 'lunch',
+          mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Identificada',
+          identifiedFoods: aiResult.identifiedFoods,
+          calculatedFoods,
+          total: totals,
+          uncertainties,
+        };
+
+        saveIdempotency(req, responsePayload);
+        return res.json(responsePayload);
+      } catch (innerErr: any) {
+        // Refund atomically without double refund
+        await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
+        throw innerErr;
       }
-
-      // Enrich identified foods with deterministic TACO calculations & confidence tiers
-      const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
-        aiResult.identifiedFoods
-      );
-
-      // If no foods could be matched in database, prompt manual confirmation instead of fabricating
-      if (calculatedFoods.length === 0) {
-        return res.status(422).json({
-          success: false,
-          error: {
-            code: ERROR_CODES.NOT_FOUND,
-            message: 'Alimentos identificados precisam de conferência manual de nutrientes.',
-          },
-          identifiedNames: unmatchedFoods,
-        });
-      }
-
-      const totals = NutritionCalculator.calculateTotals(calculatedFoods);
-
-      const uncertainties = aiResult.uncertainties || [];
-      if (unmatchedFoods.length > 0) {
-        uncertainties.push(`Alimentos a confirmar manualmente: ${unmatchedFoods.join(', ')}`);
-      }
-
-      return res.json({
-        success: true,
-        mealType: aiResult.mealType || 'lunch',
-        mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Identificada',
-        identifiedFoods: aiResult.identifiedFoods,
-        calculatedFoods,
-        total: totals,
-        uncertainties,
-      });
     } catch (error: any) {
       console.error('[API /analyze-meal-photo] Erro na análise');
-      if (req.user?.uid) {
-        await ServerAIUsageService.refundAction(req.user.uid, 'mealAnalysis');
-      }
       return res.status(500).json({
         success: false,
         error: {

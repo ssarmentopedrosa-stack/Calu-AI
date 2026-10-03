@@ -10,16 +10,27 @@ service firebase.storage {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidFileName(name) {
+      return name is string && name.size() <= 128 && name.matches('^[a-zA-Z0-9_\\-]+\\.(jpg|jpeg|png|webp)$');
+    }
+
     // User Meal Photos Storage
     match /users/{userId}/meals/{mealId}/{fileName} {
       allow read: if isOwner(userId);
       allow write: if isOwner(userId)
-                   && request.resource.size < 5 * 1024 * 1024 // 5MB limit
+                   && isValidId(mealId)
+                   && isValidFileName(fileName)
+                   && request.resource.size > 0
+                   && request.resource.size <= 5 * 1024 * 1024 // 5MB limit
                    && request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
       allow delete: if isOwner(userId);
     }
 
-    // Default deny
+    // Default deny for all unspecified paths
     match /{allPaths=**} {
       allow read, write: if false;
     }

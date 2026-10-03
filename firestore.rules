@@ -35,27 +35,47 @@ service cloud.firestore {
 
       // Meals subcollection
       match /meals/{mealId} {
-        allow read, write: if isOwner(userId) && isValidId(mealId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(mealId)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(mealId);
       }
 
       // Weight logs subcollection
       match /weightLogs/{weightId} {
-        allow read, write: if isOwner(userId) && isValidId(weightId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(weightId)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(weightId);
       }
 
       // Water logs subcollection
       match /waterLogs/{waterId} {
-        allow read, write: if isOwner(userId) && isValidId(waterId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(waterId)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(waterId);
       }
 
       // Habits subcollection
       match /habits/{date} {
-        allow read, write: if isOwner(userId) && isValidId(date);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(date)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(date);
       }
 
       // Calu AI memories subcollection
       match /memories/{memoryId} {
-        allow read, write: if isOwner(userId) && isValidId(memoryId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(memoryId)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(memoryId);
       }
 
       // AI Chat messages subcollection
@@ -97,7 +117,11 @@ service cloud.firestore {
 
       // Goals document
       match /goals/{docId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(docId)
+                             && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
+        allow delete: if isOwner(userId) && isValidId(docId);
       }
     }
   }
