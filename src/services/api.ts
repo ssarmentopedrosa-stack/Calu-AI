@@ -25,7 +25,7 @@ export class CaluApiService {
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.2.0', environment: 'local', firebaseAdminReady: false };
+      return { status: 'offline', version: '2.2.1', environment: 'local', firebaseAdminReady: false };
     }
   }
 
@@ -143,6 +143,9 @@ export class CaluApiService {
       method: 'POST',
       headers,
     });
-    if (!res.ok) throw new Error('Falha ao processar exclusão completa no servidor.');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error?.message || 'Falha ao processar exclusão completa no servidor.');
+    }
   }
 }

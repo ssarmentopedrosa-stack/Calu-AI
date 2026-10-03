@@ -6,16 +6,31 @@ import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { BRAZILIAN_BARCODES } from './src/data/barcodeDatabase.ts';
 import { NutritionService } from './src/services/nutritionService.ts';
 import { NutritionCalculator } from './src/services/nutritionCalculator.ts';
-import { APP_VERSION } from './src/config/constants.ts';
+import {
+  APP_VERSION,
+  USER_DATA_COLLECTIONS,
+  MAX_IMAGE_BASE64_LENGTH,
+  ERROR_CODES,
+} from './src/config/constants.ts';
 import { DateService } from './src/services/dateService.ts';
-import { initFirebaseAdmin, getAdminAuth, getAdminDb, getAdminStorage, isFirebaseAdminReady } from './server/firebaseAdmin.ts';
+import {
+  initFirebaseAdmin,
+  getAdminAuth,
+  getAdminDb,
+  getAdminStorage,
+  isFirebaseAdminReady,
+} from './server/firebaseAdmin.ts';
 import { requireAuth, AuthenticatedRequest } from './server/middleware/requireAuth.ts';
 import { ServerAIUsageService } from './server/services/aiUsageService.ts';
-import { ServerUserContextService } from './server/services/userContextService.ts';
+import {
+  ServerUserContextService,
+  UserContextUnavailableError,
+} from './server/services/userContextService.ts';
 
 dotenv.config();
 
@@ -25,10 +40,58 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const app = express();
 
+// Startup Environment Validation (Phase 19)
+function validateEnvironmentOnStartup() {
+  if (process.env.NODE_ENV === 'production') {
+    const requiredVars = [
+      'GEMINI_API_KEY',
+      'FIREBASE_PROJECT_ID',
+      'FIREBASE_CLIENT_EMAIL',
+      'FIREBASE_PRIVATE_KEY',
+    ];
+    const missing = requiredVars.filter(v => !process.env[v]);
+    if (missing.length > 0) {
+      console.error(
+        `[Startup Error] Produção bloqueada: Variáveis obrigatórias ausentes: ${missing.join(', ')}`
+      );
+      process.exit(1);
+    }
+  }
+}
+validateEnvironmentOnStartup();
+
 // Initialize Firebase Admin SDK
 initFirebaseAdmin();
 
-// 1. Security Headers via Helmet
+// 1. Observability: RequestId and Request Timing Middleware (Phase 23)
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const reqId = crypto.randomUUID();
+  (req as any).requestId = reqId;
+  res.setHeader('X-Request-Id', reqId);
+  const startHr = process.hrtime();
+
+  res.on('finish', () => {
+    const diff = process.hrtime(startHr);
+    const durationMs = Math.round(diff[0] * 1000 + diff[1] / 1e6);
+    // Safe structured logging: no tokens, passwords or secrets
+    if (req.path.startsWith('/api') && req.path !== '/api/health' && req.path !== '/api/health/live') {
+      console.log(
+        JSON.stringify({
+          reqId,
+          method: req.method,
+          path: req.path,
+          status: res.statusCode,
+          durationMs,
+          timestamp: new Date().toISOString(),
+        })
+      );
+    }
+  });
+
+  next();
+});
+
+// 2. Security Headers via Helmet (Phase 21)
 app.use(
   helmet({
     contentSecurityPolicy: false, // Vite dev server and camera previews require relaxed CSP
@@ -37,7 +100,7 @@ app.use(
   })
 );
 
-// 2. Explicit CORS: in production, strictly allow only authorized origins (never '*')
+// 3. Explicit CORS: in production, strictly allow only authorized origins (Phase 20)
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -61,19 +124,20 @@ app.use(
   })
 );
 
-// 3. Body parsers with strict size limits
+// 4. Body parsers with strict size limits (Phase 29)
 app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 
-// 4. Rate Limiting Categories
+// 5. Rate Limiting Categories (Phase 12)
 const publicRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 120, // 120 requests per 15 min
   standardHeaders: true,
   legacyHeaders: false,
   message: {
+    success: false,
     error: {
-      code: 'RATE_LIMITED',
+      code: ERROR_CODES.RATE_LIMITED,
       message: 'Muitas requisições. Por favor, aguarde alguns instantes.',
     },
   },
@@ -85,8 +149,9 @@ const expensiveAiRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: {
+    success: false,
     error: {
-      code: 'RATE_LIMITED',
+      code: ERROR_CODES.RATE_LIMITED,
       message: 'Muitas solicitações de IA em sequência. Por favor, aguarde alguns minutos.',
     },
   },
@@ -98,8 +163,9 @@ const userAccountRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: {
+    success: false,
     error: {
-      code: 'RATE_LIMITED',
+      code: ERROR_CODES.RATE_LIMITED,
       message: 'Muitas tentativas nesta operação sensível. Aguarde antes de tentar novamente.',
     },
   },
@@ -130,10 +196,14 @@ export interface AIProvider {
   analyzeMealImage(base64Image: string, mimeType: string, userNotes?: string): Promise<any>;
   analyzeMealText(text: string, userNotes?: string): Promise<any>;
   generateDailyInsight(userContext: any): Promise<string>;
-  chatWithCalu(history: { sender: string; text: string }[], userMessage: string, userContext: any): Promise<string>;
+  chatWithCalu(
+    history: { sender: string; text: string }[],
+    userMessage: string,
+    userContext: any
+  ): Promise<string>;
 }
 
-// Server-side Gemini Provider implementation using @google/genai SDK
+// Server-side Gemini Provider implementation using @google/genai SDK (Phase 10)
 class GeminiProvider implements AIProvider {
   private ai: GoogleGenAI | null = null;
   private modelName = 'gemini-3.8-flash';
@@ -279,9 +349,8 @@ Retorne ESTRITAMENTE um objeto JSON no formato:
   }
 
   async generateDailyInsight(userContext: any): Promise<string> {
-    try {
-      const ai = this.ensureClient();
-      const prompt = `
+    const ai = this.ensureClient();
+    const prompt = `
 Com base nos dados alimentares reais de hoje reconstruídos no servidor para o usuário:
 - Nome: ${userContext?.name || 'Usuário'}
 - Refeições de hoje: ${userContext?.todayMealsSummary || 'Nenhuma refeição registrada'}
@@ -298,21 +367,21 @@ DIRETRIZES:
 - Seja construtiva, empática e humanizada.
 `;
 
-      const geminiPromise = ai.models.generateContent({
-        model: this.modelName,
-        contents: prompt,
-        config: { systemInstruction: CALU_SYSTEM_PROMPT },
-      });
+    const geminiPromise = ai.models.generateContent({
+      model: this.modelName,
+      contents: prompt,
+      config: { systemInstruction: CALU_SYSTEM_PROMPT },
+    });
 
-      const timeoutPromise = new Promise<any>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout de insight')), 7500)
-      );
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout de insight')), 7500)
+    );
 
-      const response = await Promise.race([geminiPromise, timeoutPromise]);
-      return response.text?.trim() || 'Você está mantendo um excelente ritmo de acompanhamento hoje. Cada registro ajuda a compreender melhor seus hábitos!';
-    } catch {
-      return 'Seu ritmo de acompanhamento está ótimo! Manter o diário consistente é o primeiro passo para compreender seus sinais de fome e energia.';
-    }
+    const response = await Promise.race([geminiPromise, timeoutPromise]);
+    return (
+      response.text?.trim() ||
+      'Você está mantendo um excelente ritmo de acompanhamento hoje. Cada registro ajuda a compreender melhor seus hábitos!'
+    );
   }
 
   async chatWithCalu(
@@ -320,13 +389,12 @@ DIRETRIZES:
     userMessage: string,
     userContext: any
   ): Promise<string> {
-    try {
-      const ai = this.ensureClient();
-      const formattedHistory = history
-        .map(m => `${m.sender === 'user' ? 'Usuário' : 'Calu'}: ${m.text}`)
-        .join('\n');
+    const ai = this.ensureClient();
+    const formattedHistory = history
+      .map(m => `${m.sender === 'user' ? 'Usuário' : 'Calu'}: ${m.text}`)
+      .join('\n');
 
-      const prompt = `
+    const prompt = `
 [CONTEXTO FACTUAL DO USUÁRIO NO SERVIDOR - FONTE OFICIAL FIRESTORE]
 - Nome: ${userContext?.name || 'Amigo(a)'}
 - Objetivo: ${userContext?.goal || 'Acompanhar hábitos'}
@@ -352,21 +420,21 @@ DIRETRIZES DE SEGURANÇA E RESPOSTA:
 3. Não prescreva dietas restritivas nem faça diagnósticos médicos. Use parágrafos curtos.
 `;
 
-      const geminiPromise = ai.models.generateContent({
-        model: this.modelName,
-        contents: prompt,
-        config: { systemInstruction: CALU_SYSTEM_PROMPT },
-      });
+    const geminiPromise = ai.models.generateContent({
+      model: this.modelName,
+      contents: prompt,
+      config: { systemInstruction: CALU_SYSTEM_PROMPT },
+    });
 
-      const timeoutPromise = new Promise<any>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout chat')), 8000)
-      );
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout chat')), 8000)
+    );
 
-      const response = await Promise.race([geminiPromise, timeoutPromise]);
-      return response.text?.trim() || 'Olá! Estou aqui para te apoiar no seu acompanhamento alimentar. Como posso te ajudar agora?';
-    } catch {
-      return 'Estou aqui com você! Acompanhando o seu diário hoje, o que você gostaria de planejar ou ajustar na sua próxima refeição?';
-    }
+    const response = await Promise.race([geminiPromise, timeoutPromise]);
+    return (
+      response.text?.trim() ||
+      'Olá! Estou aqui para te apoiar no seu acompanhamento alimentar. Como posso te ajudar agora?'
+    );
   }
 }
 
@@ -394,41 +462,74 @@ function getAIProvider(): AIProvider {
 
 const aiProvider = getAIProvider();
 
-// Zod Validation Schemas
+// Zod Validation Schemas (Phases 9 & 29)
 const photoAnalysisSchema = z.object({
-  imageBase64: z.string().min(20, 'Imagem em formato inválido').max(7 * 1024 * 1024, 'Imagem excede limite de 5MB'),
+  imageBase64: z
+    .string()
+    .min(20, 'Imagem em formato inválido')
+    .max(MAX_IMAGE_BASE64_LENGTH, 'Imagem excede o limite máximo permitido de 5MB.'),
   mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).default('image/jpeg'),
-  userNotes: z.string().max(300).optional(),
+  userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
 });
 
 const textAnalysisSchema = z.object({
-  text: z.string().min(2, 'Descrição muito curta').max(500, 'Descrição muito longa'),
-  userNotes: z.string().max(300).optional(),
+  text: z.string().min(2, 'Descrição muito curta').max(500, 'Descrição excede o limite de 500 caracteres.'),
+  userNotes: z.string().max(300, 'Observações devem ter no máximo 300 caracteres.').optional(),
 });
 
-const chatRequestSchema = z.object({
-  message: z.string().min(1, 'A mensagem não pode ser vazia').max(1000, 'A mensagem excede o limite de 1000 caracteres').optional(),
-  messages: z.array(
-    z.object({
-      id: z.string().optional(),
-      sender: z.enum(['user', 'calu']),
-      text: z.string().max(1000),
-      timestamp: z.string().optional(),
-    })
-  ).max(30).optional(),
-}).refine(data => Boolean(data.message || (data.messages && data.messages.length > 0)), {
-  message: 'Texto da mensagem é obrigatório.',
-});
+const chatRequestSchema = z
+  .object({
+    message: z
+      .string()
+      .min(1, 'A mensagem não pode estar vazia.')
+      .max(1000, 'A mensagem excede o limite de 1000 caracteres.')
+      .optional(),
+    messages: z
+      .array(
+        z.object({
+          id: z.string().optional(),
+          sender: z.enum(['user', 'calu']),
+          text: z.string().max(1000),
+          timestamp: z.string().optional(),
+        })
+      )
+      .max(30)
+      .optional(),
+  })
+  .refine(data => Boolean(data.message || (data.messages && data.messages.length > 0)), {
+    message: 'Texto da mensagem é obrigatório.',
+  });
 
 // --- API ENDPOINTS ---
 
-// Health Check (Public - no secret leakage)
+// Health Checks (Liveness and Readiness - Phase 24)
 app.get('/api/health', publicRateLimiter, (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     version: APP_VERSION,
     environment: process.env.NODE_ENV || 'production',
     firebaseAdminReady: isFirebaseAdminReady(),
+  });
+});
+
+app.get('/api/health/live', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'live', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/health/ready', (req: Request, res: Response) => {
+  const ready = isFirebaseAdminReady();
+  if (process.env.NODE_ENV === 'production' && !ready) {
+    return res.status(503).json({
+      status: 'unready',
+      reason: 'Firebase Admin SDK não conectado.',
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return res.status(200).json({
+    status: 'ready',
+    version: APP_VERSION,
+    firebaseAdmin: ready ? 'connected' : 'dev_mode',
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -447,393 +548,527 @@ app.get('/api/barcode/:code', publicRateLimiter, (req: Request, res: Response) =
 });
 
 // Photo Analysis Endpoint (Protected by requireAuth + expensiveAiRateLimiter)
-app.post('/api/analyze-meal-photo', requireAuth, expensiveAiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const parseResult = photoAnalysisSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'Formato ou tamanho da imagem inválido.' },
-      });
-    }
-
-    const { imageBase64, mimeType, userNotes } = parseResult.data;
-    const uid = req.user!.uid;
-
-    // Server-side AI Quota check in Firestore: STRICT FAIL-CLOSED
-    const rateCheck = await ServerAIUsageService.checkAndIncrement(
-      uid,
-      'mealAnalysis',
-      req.user!.isPremium
-    );
-
-    if (!rateCheck.allowed) {
-      if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
-        return res.status(503).json({
+app.post(
+  '/api/analyze-meal-photo',
+  requireAuth,
+  expensiveAiRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parseResult = photoAnalysisSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return res.status(400).json({
           success: false,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Serviço de cotas indisponível temporariamente. Tente novamente em instantes.' },
+          error: {
+            code: ERROR_CODES.INVALID_INPUT,
+            message: parseResult.error.issues[0]?.message || 'Formato ou tamanho da imagem inválido.',
+          },
         });
       }
-      return res.status(429).json({
+
+      const { imageBase64, mimeType, userNotes } = parseResult.data;
+      const uid = req.user!.uid;
+
+      // Server-side AI Quota check in Firestore: STRICT FAIL-CLOSED (Phase 11)
+      const rateCheck = await ServerAIUsageService.checkAndIncrement(
+        uid,
+        'mealAnalysis',
+        req.user!.isPremium
+      );
+
+      if (!rateCheck.allowed) {
+        if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.QUOTA_UNAVAILABLE,
+              message:
+                'Serviço de verificação de cotas indisponível temporariamente. Tente novamente em instantes.',
+            },
+          });
+        }
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.RATE_LIMITED,
+            message: 'Você atingiu o limite de análises por foto de hoje para o seu plano.',
+          },
+        });
+      }
+
+      // Call AI Provider to identify foods
+      const aiResult = await aiProvider.analyzeMealImage(imageBase64, mimeType, userNotes);
+
+      if (
+        !aiResult ||
+        !aiResult.isFood ||
+        !aiResult.identifiedFoods ||
+        aiResult.identifiedFoods.length === 0
+      ) {
+        return res.status(422).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.AI_ANALYSIS_FAILED,
+            message: 'Não consegui analisar essa refeição com segurança.',
+          },
+        });
+      }
+
+      // Enrich identified foods with deterministic TACO calculations & confidence tiers
+      const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
+        aiResult.identifiedFoods
+      );
+
+      // If no foods could be matched in database, prompt manual confirmation instead of fabricating
+      if (calculatedFoods.length === 0) {
+        return res.status(422).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message: 'Alimentos identificados precisam de conferência manual de nutrientes.',
+          },
+          identifiedNames: unmatchedFoods,
+        });
+      }
+
+      const totals = NutritionCalculator.calculateTotals(calculatedFoods);
+
+      const uncertainties = aiResult.uncertainties || [];
+      if (unmatchedFoods.length > 0) {
+        uncertainties.push(`Alimentos a confirmar manualmente: ${unmatchedFoods.join(', ')}`);
+      }
+
+      return res.json({
+        success: true,
+        mealType: aiResult.mealType || 'lunch',
+        mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Identificada',
+        identifiedFoods: aiResult.identifiedFoods,
+        calculatedFoods,
+        total: totals,
+        uncertainties,
+      });
+    } catch (error: any) {
+      console.error('[API /analyze-meal-photo] Erro na análise');
+      return res.status(500).json({
         success: false,
-        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite de análises por foto de hoje para o seu plano.' },
+        error: {
+          code: ERROR_CODES.AI_ANALYSIS_FAILED,
+          message: 'Não consegui analisar essa refeição com segurança.',
+        },
       });
     }
-
-    // Call AI Provider to identify foods
-    const aiResult = await aiProvider.analyzeMealImage(imageBase64, mimeType, userNotes);
-
-    if (!aiResult || !aiResult.isFood || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa refeição com segurança.' },
-      });
-    }
-
-    // Enrich identified foods with deterministic TACO calculations & confidence tiers
-    const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
-      aiResult.identifiedFoods
-    );
-
-    // If no foods could be matched in database, prompt manual confirmation instead of fabricating
-    if (calculatedFoods.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'FOOD_NOT_FOUND', message: 'Alimentos identificados precisam de conferência manual de nutrientes.' },
-        identifiedNames: unmatchedFoods,
-      });
-    }
-
-    const totals = NutritionCalculator.calculateTotals(calculatedFoods);
-
-    const uncertainties = aiResult.uncertainties || [];
-    if (unmatchedFoods.length > 0) {
-      uncertainties.push(`Alimentos a confirmar manualmente: ${unmatchedFoods.join(', ')}`);
-    }
-
-    return res.json({
-      success: true,
-      mealType: aiResult.mealType || 'lunch',
-      mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Identificada',
-      identifiedFoods: aiResult.identifiedFoods,
-      calculatedFoods,
-      total: totals,
-      uncertainties,
-    });
-  } catch (error: any) {
-    console.error('[API /analyze-meal-photo] Erro na análise');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa refeição com segurança.' },
-    });
   }
-});
+);
 
 // Text & Voice Analysis Endpoint (Protected by requireAuth + expensiveAiRateLimiter)
-app.post('/api/analyze-meal-text', requireAuth, expensiveAiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const parseResult = textAnalysisSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'Descrição de refeição inválida.' },
-      });
-    }
-
-    const { text, userNotes } = parseResult.data;
-    const uid = req.user!.uid;
-
-    const rateCheck = await ServerAIUsageService.checkAndIncrement(
-      uid,
-      'mealAnalysis',
-      req.user!.isPremium
-    );
-
-    if (!rateCheck.allowed) {
-      if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
-        return res.status(503).json({
+app.post(
+  '/api/analyze-meal-text',
+  requireAuth,
+  expensiveAiRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parseResult = textAnalysisSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return res.status(400).json({
           success: false,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Serviço de cotas indisponível temporariamente.' },
+          error: {
+            code: ERROR_CODES.INVALID_INPUT,
+            message: parseResult.error.issues[0]?.message || 'Descrição de refeição inválida.',
+          },
         });
       }
-      return res.status(429).json({
+
+      const { text, userNotes } = parseResult.data;
+      const uid = req.user!.uid;
+
+      const rateCheck = await ServerAIUsageService.checkAndIncrement(
+        uid,
+        'mealAnalysis',
+        req.user!.isPremium
+      );
+
+      if (!rateCheck.allowed) {
+        if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.QUOTA_UNAVAILABLE,
+              message: 'Serviço de cotas indisponível temporariamente.',
+            },
+          });
+        }
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.RATE_LIMITED,
+            message: 'Você atingiu o limite de análises diárias do seu plano.',
+          },
+        });
+      }
+
+      const aiResult = await aiProvider.analyzeMealText(text, userNotes);
+
+      if (!aiResult || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
+        return res.status(422).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.AI_ANALYSIS_FAILED,
+            message: 'Não foi possível identificar alimentos na sua descrição.',
+          },
+        });
+      }
+
+      const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
+        aiResult.identifiedFoods
+      );
+
+      if (calculatedFoods.length === 0) {
+        return res.status(422).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.NOT_FOUND,
+            message:
+              'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.',
+          },
+        });
+      }
+
+      const totals = NutritionCalculator.calculateTotals(calculatedFoods);
+
+      return res.json({
+        success: true,
+        mealType: aiResult.mealType || 'lunch',
+        mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Registrada',
+        identifiedFoods: aiResult.identifiedFoods,
+        calculatedFoods,
+        total: totals,
+        uncertainties: aiResult.uncertainties || [],
+      });
+    } catch (error: any) {
+      console.error('[API /analyze-meal-text] Erro');
+      return res.status(500).json({
         success: false,
-        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite de análises diárias do seu plano.' },
+        error: {
+          code: ERROR_CODES.AI_ANALYSIS_FAILED,
+          message: 'Não consegui analisar essa descrição no momento.',
+        },
       });
     }
-
-    const aiResult = await aiProvider.analyzeMealText(text, userNotes);
-
-    if (!aiResult || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'AI_ANALYSIS_FAILED', message: 'Não foi possível identificar alimentos na sua descrição.' },
-      });
-    }
-
-    const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
-      aiResult.identifiedFoods
-    );
-
-    if (calculatedFoods.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: { code: 'FOOD_NOT_FOUND', message: 'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.' },
-      });
-    }
-
-    const totals = NutritionCalculator.calculateTotals(calculatedFoods);
-
-    return res.json({
-      success: true,
-      mealType: aiResult.mealType || 'lunch',
-      mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Registrada',
-      identifiedFoods: aiResult.identifiedFoods,
-      calculatedFoods,
-      total: totals,
-      uncertainties: aiResult.uncertainties || [],
-    });
-  } catch (error: any) {
-    console.error('[API /analyze-meal-text] Erro');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'AI_ANALYSIS_FAILED', message: 'Não consegui analisar essa descrição no momento.' },
-    });
   }
-});
+);
 
-// Daily Insight Endpoint (Protected - Rebuilds context server-side from Firestore)
-app.post('/api/daily-insight', requireAuth, expensiveAiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const uid = req.user!.uid;
+// Daily Insight Endpoint (Protected - Rebuilds context server-side from Firestore FAIL-CLOSED - Phase 1)
+app.post(
+  '/api/daily-insight',
+  requireAuth,
+  expensiveAiRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const uid = req.user!.uid;
 
-    const rateCheck = await ServerAIUsageService.checkAndIncrement(
-      uid,
-      'dailyInsight',
-      req.user!.isPremium
-    );
+      const rateCheck = await ServerAIUsageService.checkAndIncrement(
+        uid,
+        'dailyInsight',
+        req.user!.isPremium
+      );
 
-    if (!rateCheck.allowed) {
-      if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
-        return res.status(503).json({
+      if (!rateCheck.allowed) {
+        if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.QUOTA_UNAVAILABLE,
+              message: 'Serviço de cotas indisponível temporariamente.',
+            },
+          });
+        }
+        return res.status(429).json({
           success: false,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Serviço de cotas indisponível temporariamente.' },
+          error: {
+            code: ERROR_CODES.RATE_LIMITED,
+            message: 'Limite diário de insights atingido.',
+          },
         });
       }
-      return res.status(429).json({
-        success: false,
-        error: { code: 'RATE_LIMITED', message: 'Limite diário de insights atingido.' },
-      });
-    }
 
-    // Reconstruct user context directly on the server from Firestore (Anti-spoofing)
-    const userContext = await ServerUserContextService.buildUserContext(uid);
-    const insight = await aiProvider.generateDailyInsight(userContext);
-
-    return res.json({ success: true, insight });
-  } catch (error: any) {
-    console.error('[API /daily-insight] Erro');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'SERVER_ERROR', message: 'Não foi possível gerar seu insight agora. Tente novamente mais tarde.' },
-    });
-  }
-});
-
-// Calu AI Coach Chat Endpoint (Server-Authoritative Chat with True History & Persistence)
-app.post('/api/chat-calu', requireAuth, expensiveAiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const parseResult = chatRequestSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'Mensagem de chat inválida ou muito longa.' },
-      });
-    }
-
-    const uid = req.user!.uid;
-
-    // Extract the user's latest text input
-    let userMessageText = (parseResult.data.message || '').trim();
-    if (!userMessageText && parseResult.data.messages) {
-      const userMsgs = parseResult.data.messages.filter(m => m.sender === 'user');
-      userMessageText = (userMsgs[userMsgs.length - 1]?.text || '').trim();
-    }
-
-    if (!userMessageText) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'A mensagem do usuário não pode estar vazia.' },
-      });
-    }
-
-    // Fail-Closed AI Quota Check
-    const rateCheck = await ServerAIUsageService.checkAndIncrement(
-      uid,
-      'chat',
-      req.user!.isPremium
-    );
-
-    if (!rateCheck.allowed) {
-      if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
-        return res.status(503).json({
-          success: false,
-          error: { code: 'SERVICE_UNAVAILABLE', message: 'Serviço de cotas indisponível temporariamente.' },
-        });
-      }
-      return res.status(429).json({
-        success: false,
-        error: { code: 'RATE_LIMITED', message: 'Você atingiu o limite diário de mensagens com a Calu.' },
-      });
-    }
-
-    // Server-Authoritative: load true history from Firestore (ignore client fake history)
-    let history: { sender: string; text: string }[] = [];
-    if (isFirebaseAdminReady()) {
+      // Reconstruct user context directly on the server from Firestore: FAIL-CLOSED
+      let userContext;
       try {
-        const db = getAdminDb();
-        const chatSnap = await db
-          .collection(`users/${uid}/chatMessages`)
-          .orderBy('timestamp', 'asc')
-          .limitToLast(10)
-          .get();
-
-        chatSnap.forEach(d => {
-          const data = d.data();
-          if (data?.sender && data?.text) {
-            history.push({ sender: data.sender, text: data.text });
-          }
+        userContext = await ServerUserContextService.buildUserContext(uid);
+      } catch (ctxErr: any) {
+        console.error('[API /daily-insight] FAIL-CLOSED: Erro ao ler contexto:', ctxErr.message);
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.USER_CONTEXT_UNAVAILABLE,
+            message:
+              'Não foi possível carregar os dados do seu diário para gerar o insight. Tente novamente mais tarde.',
+          },
         });
-      } catch (dbErr: any) {
-        console.warn('[API /chat-calu] Aviso na leitura de histórico:', dbErr.message);
       }
-    }
 
-    // Reconstruct factual context directly from Firestore
-    const userContext = await ServerUserContextService.buildUserContext(uid);
-    const reply = await aiProvider.chatWithCalu(history, userMessageText, userContext);
-
-    const now = DateService.getLocalDateTime();
-    const userMsgId = 'msg_user_' + Date.now();
-    const caluMsgId = 'msg_calu_' + (Date.now() + 1);
-
-    // Server-Authoritative: persist both user and assistant messages in Firestore
-    if (isFirebaseAdminReady()) {
-      try {
-        const db = getAdminDb();
-        const batch = db.batch();
-        const userDocRef = db.doc(`users/${uid}/chatMessages/${userMsgId}`);
-        const caluDocRef = db.doc(`users/${uid}/chatMessages/${caluMsgId}`);
-
-        batch.set(userDocRef, {
-          id: userMsgId,
-          uid,
-          sender: 'user',
-          text: userMessageText,
-          timestamp: now,
-        });
-
-        batch.set(caluDocRef, {
-          id: caluMsgId,
-          uid,
-          sender: 'calu',
-          text: reply,
-          timestamp: DateService.getLocalDateTime(),
-        });
-
-        await batch.commit();
-      } catch (saveErr: any) {
-        console.warn('[API /chat-calu] Aviso na persistência server-side do chat:', saveErr.message);
-      }
-    }
-
-    return res.json({
-      success: true,
-      reply,
-      userMessageId: userMsgId,
-      caluMessageId: caluMsgId,
-    });
-  } catch (error: any) {
-    console.error('[API /chat-calu] Erro');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'AI_CHAT_FAILED', message: 'Tive uma breve oscilação de conexão, por favor tente novamente.' },
-    });
-  }
-});
-
-// LGPD Export Data Endpoint (Protected by requireAuth + userAccountRateLimiter)
-app.get('/api/user/export-data', requireAuth, userAccountRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const uid = req.user!.uid;
-
-    if (!isFirebaseAdminReady()) {
-      return res.status(503).json({
+      const insight = await aiProvider.generateDailyInsight(userContext);
+      return res.json({ success: true, insight });
+    } catch (error: any) {
+      console.error('[API /daily-insight] Erro');
+      return res.status(500).json({
         success: false,
-        error: { code: 'DATABASE_UNAVAILABLE', message: 'Serviço de banco de dados indisponível.' },
+        error: {
+          code: ERROR_CODES.INTERNAL_ERROR,
+          message: 'Não foi possível gerar seu insight agora. Tente novamente mais tarde.',
+        },
       });
     }
+  }
+);
 
-    const db = getAdminDb();
+// Calu AI Coach Chat Endpoint (Phases 2 & 3: Server-Authoritative with History and Persistence FAIL-CLOSED)
+app.post(
+  '/api/chat-calu',
+  requireAuth,
+  expensiveAiRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parseResult = chatRequestSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVALID_INPUT,
+            message: parseResult.error.issues[0]?.message || 'Mensagem de chat inválida.',
+          },
+        });
+      }
 
-    // Recursively export all subcollections for the authenticated user
-    const [profileSnap, goalsSnap, mealsSnap, weightsSnap, waterSnap, habitsSnap, memoriesSnap, chatSnap] =
-      await Promise.all([
+      const uid = req.user!.uid;
+
+      // Extract user's new message text
+      let userMessageText = (parseResult.data.message || '').trim();
+      if (!userMessageText && parseResult.data.messages) {
+        const userMsgs = parseResult.data.messages.filter(m => m.sender === 'user');
+        userMessageText = (userMsgs[userMsgs.length - 1]?.text || '').trim();
+      }
+
+      if (!userMessageText) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVALID_INPUT,
+            message: 'A mensagem do usuário não pode estar vazia.',
+          },
+        });
+      }
+
+      // 1. Fail-Closed AI Quota Check (Phase 11)
+      const rateCheck = await ServerAIUsageService.checkAndIncrement(
+        uid,
+        'chat',
+        req.user!.isPremium
+      );
+
+      if (!rateCheck.allowed) {
+        if (rateCheck.reason === 'QUOTA_UNAVAILABLE') {
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.QUOTA_UNAVAILABLE,
+              message: 'Serviço de verificação de cotas indisponível temporariamente.',
+            },
+          });
+        }
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.RATE_LIMITED,
+            message: 'Você atingiu o limite diário de mensagens com a Calu para o seu plano.',
+          },
+        });
+      }
+
+      // 2. Server-Authoritative History: Load true history from Firestore (Phase 2 FAIL-CLOSED)
+      let history: { sender: string; text: string }[] = [];
+      if (isFirebaseAdminReady()) {
+        try {
+          const db = getAdminDb();
+          const chatSnap = await db
+            .collection(`users/${uid}/chatMessages`)
+            .orderBy('timestamp', 'asc')
+            .limitToLast(10)
+            .get();
+
+          chatSnap.forEach(d => {
+            const data = d.data();
+            if (data?.sender && data?.text) {
+              history.push({ sender: data.sender, text: data.text });
+            }
+          });
+        } catch (dbErr: any) {
+          console.error(
+            '[API /chat-calu] FAIL-CLOSED: Erro ao carregar histórico do chat:',
+            dbErr.message
+          );
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.CHAT_HISTORY_UNAVAILABLE,
+              message:
+                'Não foi possível carregar seu histórico de conversa no momento. Tente novamente em alguns minutos.',
+            },
+          });
+        }
+      }
+
+      // 3. User Context: Reconstruct factual context directly from Firestore (Phase 1 FAIL-CLOSED)
+      let userContext;
+      try {
+        userContext = await ServerUserContextService.buildUserContext(uid);
+      } catch (ctxErr: any) {
+        console.error('[API /chat-calu] FAIL-CLOSED: Erro ao construir contexto:', ctxErr.message);
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.USER_CONTEXT_UNAVAILABLE,
+            message:
+              'Não foi possível carregar os dados nutricionais do seu perfil. Tente novamente em instantes.',
+          },
+        });
+      }
+
+      // 4. Generate AI response with prompt injection mitigation
+      const reply = await aiProvider.chatWithCalu(history, userMessageText, userContext);
+
+      const now = DateService.getLocalDateTime();
+      const userMsgId = 'msg_user_' + Date.now();
+      const caluMsgId = 'msg_calu_' + (Date.now() + 1);
+
+      // 5. Server-Authoritative Persistence: Persist both user and assistant messages (Phase 3 FAIL-CLOSED)
+      if (isFirebaseAdminReady()) {
+        try {
+          const db = getAdminDb();
+          const batch = db.batch();
+          const userDocRef = db.doc(`users/${uid}/chatMessages/${userMsgId}`);
+          const caluDocRef = db.doc(`users/${uid}/chatMessages/${caluMsgId}`);
+
+          batch.set(userDocRef, {
+            id: userMsgId,
+            uid,
+            sender: 'user',
+            text: userMessageText,
+            timestamp: now,
+          });
+
+          batch.set(caluDocRef, {
+            id: caluMsgId,
+            uid,
+            sender: 'calu',
+            text: reply,
+            timestamp: DateService.getLocalDateTime(),
+          });
+
+          await batch.commit();
+        } catch (saveErr: any) {
+          console.error(
+            '[API /chat-calu] FAIL-CLOSED: Erro crítico ao persistir mensagens:',
+            saveErr.message
+          );
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.CHAT_PERSISTENCE_FAILED,
+              message: 'Não foi possível salvar sua conversa com a Calu. Tente novamente.',
+            },
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        reply,
+        userMessageId: userMsgId,
+        caluMessageId: caluMsgId,
+      });
+    } catch (error: any) {
+      console.error('[API /chat-calu] Erro');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: ERROR_CODES.AI_UNAVAILABLE,
+          message: 'Tive uma breve oscilação de conexão, por favor tente novamente.',
+        },
+      });
+    }
+  }
+);
+
+// LGPD Export Data Endpoint (Phases 6 & 7: Protected by requireAuth + userAccountRateLimiter)
+app.get(
+  '/api/user/export-data',
+  requireAuth,
+  userAccountRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const uid = req.user!.uid;
+
+      if (!isFirebaseAdminReady()) {
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.DATABASE_UNAVAILABLE,
+            message: 'Serviço de banco de dados indisponível.',
+          },
+        });
+      }
+
+      const db = getAdminDb();
+
+      // Export all collections using centralized USER_DATA_COLLECTIONS definition
+      const collectionsData: Record<string, any[]> = {};
+      const [profileSnap, goalsSnap] = await Promise.all([
         db.doc(`users/${uid}/preferences/profile`).get(),
         db.doc(`users/${uid}/goals/current`).get(),
-        db.collection(`users/${uid}/meals`).get(),
-        db.collection(`users/${uid}/weightLogs`).get(),
-        db.collection(`users/${uid}/waterLogs`).get(),
-        db.collection(`users/${uid}/habits`).get(),
-        db.collection(`users/${uid}/memories`).get(),
-        db.collection(`users/${uid}/chatMessages`).get(),
       ]);
 
-    const meals: any[] = [];
-    mealsSnap.forEach(d => meals.push(d.data()));
+      for (const col of USER_DATA_COLLECTIONS) {
+        if (col === 'preferences' || col === 'goals') continue;
+        const snap = await db.collection(`users/${uid}/${col}`).get();
+        const docs: any[] = [];
+        snap.forEach(d => docs.push(d.data()));
+        collectionsData[col] = docs;
+      }
 
-    const weights: any[] = [];
-    weightsSnap.forEach(d => weights.push(d.data()));
+      const exportBundle = {
+        app: 'CALU AI',
+        schemaVersion: '2.2.1',
+        exportedAt: DateService.getLocalDateTime(),
+        profile: profileSnap.exists ? profileSnap.data() : null,
+        goals: goalsSnap.exists ? goalsSnap.data() : null,
+        meals: collectionsData.meals || [],
+        weightLogs: collectionsData.weightLogs || [],
+        waterLogs: collectionsData.waterLogs || [],
+        habits: collectionsData.habits || [],
+        memories: collectionsData.memories || [],
+        chatMessages: collectionsData.chatMessages || [],
+        aiUsage: collectionsData.aiUsage || [],
+      };
 
-    const water: any[] = [];
-    waterSnap.forEach(d => water.push(d.data()));
-
-    const habits: any[] = [];
-    habitsSnap.forEach(d => habits.push(d.data()));
-
-    const memories: any[] = [];
-    memoriesSnap.forEach(d => memories.push(d.data()));
-
-    const chat: any[] = [];
-    chatSnap.forEach(d => chat.push(d.data()));
-
-    const exportBundle = {
-      app: 'CALU AI',
-      schemaVersion: '2.2.0',
-      exportedAt: DateService.getLocalDateTime(),
-      uid,
-      profile: profileSnap.exists ? profileSnap.data() : null,
-      goals: goalsSnap.exists ? goalsSnap.data() : null,
-      meals,
-      weights,
-      waterLogs: water,
-      habits,
-      memories,
-      chatMessages: chat,
-    };
-
-    return res.json({ success: true, data: exportBundle });
-  } catch (error: any) {
-    console.error('[API /user/export-data] Erro');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'EXPORT_FAILED', message: 'Falha ao exportar dados do usuário.' },
-    });
+      return res.json({ success: true, data: exportBundle });
+    } catch (error: any) {
+      console.error('[API /user/export-data] Erro');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: ERROR_CODES.EXPORT_FAILED,
+          message: 'Falha ao exportar dados do usuário.',
+        },
+      });
+    }
   }
-});
+);
 
-// Helper for paginated recursive deletion in batches of 400 (Phase 26)
-async function deleteCollectionInBatches(collectionRef: FirebaseFirestore.CollectionReference, batchSize = 400) {
+// Helper for paginated recursive deletion in safe batches of 400 (Phases 5 & 26)
+async function deleteCollectionInBatches(
+  collectionRef: FirebaseFirestore.CollectionReference,
+  batchSize = 400
+) {
   while (true) {
     const snapshot = await collectionRef.limit(batchSize).get();
     if (snapshot.empty) break;
@@ -843,84 +1078,112 @@ async function deleteCollectionInBatches(collectionRef: FirebaseFirestore.Collec
   }
 }
 
-// LGPD Recursive Delete Account Endpoint (Protected by requireAuth + userAccountRateLimiter)
-app.post('/api/user/delete-account', requireAuth, userAccountRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const uid = req.user!.uid;
+// LGPD Recursive Delete Account Endpoint (Phases 5 & 6: Strict Integrity & Idempotency)
+app.post(
+  '/api/user/delete-account',
+  requireAuth,
+  userAccountRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const uid = req.user!.uid;
 
-    if (!isFirebaseAdminReady()) {
-      return res.status(503).json({
+      if (!isFirebaseAdminReady()) {
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.DATABASE_UNAVAILABLE,
+            message: 'Serviço de banco de dados indisponível.',
+          },
+        });
+      }
+
+      const db = getAdminDb();
+      const auth = getAdminAuth();
+      const storage = getAdminStorage();
+
+      // Step 1: Delete all user collections defined in USER_DATA_COLLECTIONS
+      try {
+        for (const subcol of USER_DATA_COLLECTIONS) {
+          const colRef = db.collection(`users/${uid}/${subcol}`);
+          await deleteCollectionInBatches(colRef, 400);
+        }
+        await db.doc(`users/${uid}`).delete();
+      } catch (dbErr: any) {
+        console.error('[LGPD Delete] Falha crítica ao excluir documentos Firestore:', dbErr.message);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.DELETE_INCOMPLETE,
+            message:
+              'Falha ao excluir dados de registro no banco de dados. Operação cancelada para integridade.',
+          },
+        });
+      }
+
+      // Step 2: Delete user files from Storage
+      try {
+        const bucket = storage.bucket();
+        await bucket.deleteFiles({ prefix: `users/${uid}/` });
+      } catch (storageErr: any) {
+        // Safe idempotency: 404 or missing bucket prefix is ok; other errors must fail closed
+        if (storageErr.code !== 404 && !storageErr.message?.includes('not found')) {
+          console.error('[LGPD Delete] Falha ao excluir arquivos do Storage:', storageErr.message);
+          return res.status(500).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.DELETE_INCOMPLETE,
+              message: 'Falha ao remover fotos do Storage. Conta não foi totalmente excluída.',
+            },
+          });
+        }
+      }
+
+      // Step 3: Delete Firebase Auth user
+      try {
+        await auth.deleteUser(uid);
+      } catch (authErr: any) {
+        if (authErr.code !== 'auth/user-not-found') {
+          console.error('[LGPD Delete] Falha ao excluir autenticação:', authErr.message);
+          return res.status(500).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.DELETE_INCOMPLETE,
+              message: 'Falha ao remover credenciais de autenticação.',
+            },
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        message: 'Todos os seus dados e sua conta foram excluídos com sucesso.',
+      });
+    } catch (error: any) {
+      console.error('[API /user/delete-account] Erro inesperado');
+      return res.status(500).json({
         success: false,
-        error: { code: 'DATABASE_UNAVAILABLE', message: 'Serviço de banco de dados indisponível.' },
+        error: {
+          code: ERROR_CODES.DELETE_INCOMPLETE,
+          message: 'Falha ao processar exclusão de conta.',
+        },
       });
     }
-
-    const db = getAdminDb();
-    const auth = getAdminAuth();
-    const storage = getAdminStorage();
-
-    // 1. Delete all Firestore subcollections in safe paginated batches
-    const subcollections = [
-      'meals',
-      'weightLogs',
-      'waterLogs',
-      'habits',
-      'memories',
-      'chatMessages',
-      'aiUsage',
-      'preferences',
-      'goals',
-    ];
-
-    for (const subcol of subcollections) {
-      const colRef = db.collection(`users/${uid}/${subcol}`);
-      await deleteCollectionInBatches(colRef, 400);
-    }
-
-    // Delete user root document
-    await db.doc(`users/${uid}`).delete().catch(() => null);
-
-    // 2. Delete user files from Storage if bucket is configured
-    try {
-      const bucket = storage.bucket();
-      await bucket.deleteFiles({ prefix: `users/${uid}/` });
-    } catch (storageErr: any) {
-      console.warn('[LGPD Delete] Aviso na exclusão do Storage');
-    }
-
-    // 3. Delete Firebase Auth user
-    try {
-      await auth.deleteUser(uid);
-    } catch (authErr: any) {
-      console.warn('[LGPD Delete] Aviso na exclusão do Firebase Auth');
-    }
-
-    return res.json({
-      success: true,
-      message: 'Todos os seus dados e sua conta foram excluídos com sucesso.',
-    });
-  } catch (error: any) {
-    console.error('[API /user/delete-account] Erro');
-    return res.status(500).json({
-      success: false,
-      error: { code: 'DELETE_FAILED', message: 'Falha ao processar exclusão de conta.' },
-    });
   }
-});
+);
 
-// Centralized Error Handling Middleware (No secret or stack leakage)
+// Centralized Error Handling Middleware (Phase 22 - Standard format without stack leakage)
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  console.error('[Global Error]');
+  console.error('[Global Error Middleware]');
   res.status(err.status || 500).json({
     success: false,
     error: {
-      code: err.code || 'INTERNAL_ERROR',
+      code: err.code || ERROR_CODES.INTERNAL_ERROR,
       message: err.message || 'Ocorreu um erro interno no servidor.',
     },
   });
 });
 
-// Server Initialization with Vite middleware
+// Server Initialization with Vite middleware (Phase 18)
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -937,7 +1200,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CALU AI V2.2] Servidor ativo em http://0.0.0.0:${PORT}`);
+    console.log(`[CALU AI V2.2.1] Servidor ativo em http://0.0.0.0:${PORT}`);
   });
 }
 

@@ -59,11 +59,19 @@ service cloud.firestore {
       }
 
       // AI Chat messages subcollection
-      // Client can read their history, but cannot spoof Calu messages
+      // Client can read their history, but cannot spoof Calu messages or alter history
       match /chatMessages/{messageId} {
         allow read: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(messageId) && request.resource.data.sender == 'user';
-        allow update, delete: if isOwner(userId) && isValidId(messageId);
+        allow create: if isOwner(userId)
+                     && isValidId(messageId)
+                     && request.resource.data.sender == 'user'
+                     && request.resource.data.uid == userId
+                     && request.resource.data.text is string
+                     && request.resource.data.text.size() > 0
+                     && request.resource.data.text.size() <= 1000
+                     && request.resource.data.keys().hasOnly(['id', 'uid', 'sender', 'text', 'timestamp']);
+        allow update: if false; // Append-only: historical chat integrity
+        allow delete: if isOwner(userId) && isValidId(messageId);
       }
 
       // AI Usage subcollection (Strictly server-side authoritative)
