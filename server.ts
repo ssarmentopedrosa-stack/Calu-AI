@@ -203,10 +203,10 @@ export interface AIProvider {
   ): Promise<string>;
 }
 
-// Server-side Gemini Provider implementation using @google/genai SDK (Phase 10)
+// Server-side Gemini Provider implementation using @google/genai SDK (Phase 5 & 10)
 class GeminiProvider implements AIProvider {
   private ai: GoogleGenAI | null = null;
-  private modelName = 'gemini-3.8-flash';
+  private modelName = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -238,6 +238,32 @@ class GeminiProvider implements AIProvider {
       });
     }
     return this.ai;
+  }
+
+  private async executeWithRetry<T>(
+    fn: () => Promise<T>,
+    timeoutMs: number,
+    operationName: string
+  ): Promise<T> {
+    const maxRetries = 2;
+    let attempt = 0;
+    while (attempt <= maxRetries) {
+      try {
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('AI_TIMEOUT')), timeoutMs)
+        );
+        return await Promise.race([fn(), timeoutPromise]);
+      } catch (err: any) {
+        attempt++;
+        if (attempt > maxRetries) {
+          console.error(`[GeminiProvider] Falha final em ${operationName} após ${attempt} tentativas:`, err?.message || err);
+          throw err;
+        }
+        const backoffMs = attempt * 400;
+        await new Promise(res => setTimeout(res, backoffMs));
+      }
+    }
+    throw new Error('AI_UNAVAILABLE');
   }
 
   async analyzeMealImage(base64Image: string, mimeType: string, userNotes?: string): Promise<any> {
@@ -272,30 +298,30 @@ Retorne ESTRITAMENTE um objeto JSON no formato exato:
 Se a imagem não contiver alimentos reconhecíveis, defina "isFood": false e "identifiedFoods": [].
 `;
 
-    const geminiPromise = ai.models.generateContent({
-      model: this.modelName,
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: cleanMime,
-              data: cleanBase64,
-            },
+    const response = await this.executeWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: this.modelName,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: cleanMime,
+                  data: cleanBase64,
+                },
+              },
+              { text: prompt },
+            ],
           },
-          { text: prompt },
-        ],
-      },
-      config: {
-        systemInstruction: CALU_SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('AI_TIMEOUT')), 12000)
+          config: {
+            systemInstruction: CALU_SYSTEM_PROMPT,
+            responseMimeType: 'application/json',
+          },
+        }),
+      12000,
+      'analyzeMealImage'
     );
 
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
     const text = response.text?.trim() || '{}';
     return JSON.parse(text);
   }
@@ -330,20 +356,20 @@ Retorne ESTRITAMENTE um objeto JSON no formato:
 }
 `;
 
-    const geminiPromise = ai.models.generateContent({
-      model: this.modelName,
-      contents: prompt,
-      config: {
-        systemInstruction: CALU_SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('AI_TIMEOUT')), 10000)
+    const response = await this.executeWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: this.modelName,
+          contents: prompt,
+          config: {
+            systemInstruction: CALU_SYSTEM_PROMPT,
+            responseMimeType: 'application/json',
+          },
+        }),
+      10000,
+      'analyzeMealText'
     );
 
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
     const raw = response.text?.trim() || '{}';
     return JSON.parse(raw);
   }
@@ -367,17 +393,17 @@ DIRETRIZES:
 - Seja construtiva, empática e humanizada.
 `;
 
-    const geminiPromise = ai.models.generateContent({
-      model: this.modelName,
-      contents: prompt,
-      config: { systemInstruction: CALU_SYSTEM_PROMPT },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout de insight')), 7500)
+    const response = await this.executeWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: this.modelName,
+          contents: prompt,
+          config: { systemInstruction: CALU_SYSTEM_PROMPT },
+        }),
+      7500,
+      'generateDailyInsight'
     );
 
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
     return (
       response.text?.trim() ||
       'Você está mantendo um excelente ritmo de acompanhamento hoje. Cada registro ajuda a compreender melhor seus hábitos!'
@@ -420,17 +446,17 @@ DIRETRIZES DE SEGURANÇA E RESPOSTA:
 3. Não prescreva dietas restritivas nem faça diagnósticos médicos. Use parágrafos curtos.
 `;
 
-    const geminiPromise = ai.models.generateContent({
-      model: this.modelName,
-      contents: prompt,
-      config: { systemInstruction: CALU_SYSTEM_PROMPT },
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout chat')), 8000)
+    const response = await this.executeWithRetry(
+      () =>
+        ai.models.generateContent({
+          model: this.modelName,
+          contents: prompt,
+          config: { systemInstruction: CALU_SYSTEM_PROMPT },
+        }),
+      8500,
+      'chatWithCalu'
     );
 
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
     return (
       response.text?.trim() ||
       'Olá! Estou aqui para te apoiar no seu acompanhamento alimentar. Como posso te ajudar agora?'
@@ -502,18 +528,28 @@ const chatRequestSchema = z
 
 // --- API ENDPOINTS ---
 
-// Health Checks (Liveness and Readiness - Phase 24)
+// Health Checks (Liveness and Readiness - Phase 4)
 app.get('/api/health', publicRateLimiter, (req: Request, res: Response) => {
-  res.json({
+  res.status(200).json({
     status: 'ok',
     version: APP_VERSION,
-    environment: process.env.NODE_ENV || 'production',
-    firebaseAdminReady: isFirebaseAdminReady(),
+  });
+});
+
+app.get('/api/ready', (req: Request, res: Response) => {
+  const ready = isFirebaseAdminReady();
+  if (process.env.NODE_ENV === 'production' && !ready) {
+    return res.status(503).json({
+      status: 'unready',
+    });
+  }
+  return res.status(200).json({
+    status: 'ready',
   });
 });
 
 app.get('/api/health/live', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'live', timestamp: new Date().toISOString() });
+  res.status(200).json({ status: 'ok', version: APP_VERSION });
 });
 
 app.get('/api/health/ready', (req: Request, res: Response) => {
@@ -521,15 +557,10 @@ app.get('/api/health/ready', (req: Request, res: Response) => {
   if (process.env.NODE_ENV === 'production' && !ready) {
     return res.status(503).json({
       status: 'unready',
-      reason: 'Firebase Admin SDK não conectado.',
-      timestamp: new Date().toISOString(),
     });
   }
   return res.status(200).json({
     status: 'ready',
-    version: APP_VERSION,
-    firebaseAdmin: ready ? 'connected' : 'dev_mode',
-    timestamp: new Date().toISOString(),
   });
 });
 
@@ -648,6 +679,9 @@ app.post(
       });
     } catch (error: any) {
       console.error('[API /analyze-meal-photo] Erro na análise');
+      if (req.user?.uid) {
+        await ServerAIUsageService.refundAction(req.user.uid, 'mealAnalysis');
+      }
       return res.status(500).json({
         success: false,
         error: {
@@ -745,6 +779,9 @@ app.post(
       });
     } catch (error: any) {
       console.error('[API /analyze-meal-text] Erro');
+      if (req.user?.uid) {
+        await ServerAIUsageService.refundAction(req.user.uid, 'mealAnalysis');
+      }
       return res.status(500).json({
         success: false,
         error: {
@@ -810,6 +847,9 @@ app.post(
       return res.json({ success: true, insight });
     } catch (error: any) {
       console.error('[API /daily-insight] Erro');
+      if (req.user?.uid) {
+        await ServerAIUsageService.refundAction(req.user.uid, 'dailyInsight');
+      }
       return res.status(500).json({
         success: false,
         error: {
@@ -970,6 +1010,7 @@ app.post(
             '[API /chat-calu] FAIL-CLOSED: Erro crítico ao persistir mensagens:',
             saveErr.message
           );
+          await ServerAIUsageService.refundAction(uid, 'chat');
           return res.status(503).json({
             success: false,
             error: {
@@ -988,6 +1029,9 @@ app.post(
       });
     } catch (error: any) {
       console.error('[API /chat-calu] Erro');
+      if (req.user?.uid) {
+        await ServerAIUsageService.refundAction(req.user.uid, 'chat');
+      }
       return res.status(500).json({
         success: false,
         error: {
@@ -1037,7 +1081,7 @@ app.get(
 
       const exportBundle = {
         app: 'CALU AI',
-        schemaVersion: '2.2.1',
+        schemaVersion: '2.2.2',
         exportedAt: DateService.getLocalDateTime(),
         profile: profileSnap.exists ? profileSnap.data() : null,
         goals: goalsSnap.exists ? goalsSnap.data() : null,
@@ -1200,7 +1244,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CALU AI V2.2.1] Servidor ativo em http://0.0.0.0:${PORT}`);
+    console.log(`[CALU AI V2.2.2] Servidor ativo em http://0.0.0.0:${PORT}`);
   });
 }
 

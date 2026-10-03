@@ -160,4 +160,55 @@ export class ServerAIUsageService {
       return { mealAnalyses: 0, chatMessages: 0, dailyInsights: 0 };
     }
   }
+
+  /**
+   * Safely refunds a reserved quota action if the downstream AI provider
+   * encounters an unrecoverable internal infrastructure failure.
+   * Atomic and prevents negative values.
+   */
+  static async refundAction(uid: string, action: AIActionType): Promise<void> {
+    const todayDate = DateService.getLocalDate();
+
+    if (!isFirebaseAdminReady()) {
+      const key = `${uid}_${todayDate}`;
+      const record = inMemoryQuotaStore.get(key);
+      if (record) {
+        if (action === 'mealAnalysis' && record.mealAnalyses > 0) record.mealAnalyses -= 1;
+        else if (action === 'chat' && record.chatMessages > 0) record.chatMessages -= 1;
+        else if (action === 'dailyInsight' && record.dailyInsights > 0) record.dailyInsights -= 1;
+        inMemoryQuotaStore.set(key, record);
+      }
+      return;
+    }
+
+    try {
+      const db = getAdminDb();
+      const docRef = db.doc(`users/${uid}/aiUsage/${todayDate}`);
+      await db.runTransaction(async transaction => {
+        const snap = await transaction.get(docRef);
+        if (!snap.exists) return;
+        const data = snap.data() || {};
+        const count =
+          action === 'mealAnalysis'
+            ? data.mealAnalyses || 0
+            : action === 'chat'
+            ? data.chatMessages || 0
+            : data.dailyInsights || 0;
+
+        if (count > 0) {
+          const updatePayload: Record<string, any> = {
+            totalRequests: FieldValue.increment(-1),
+            updatedAt: DateService.getLocalDateTime(),
+          };
+          if (action === 'mealAnalysis') updatePayload.mealAnalyses = FieldValue.increment(-1);
+          else if (action === 'chat') updatePayload.chatMessages = FieldValue.increment(-1);
+          else updatePayload.dailyInsights = FieldValue.increment(-1);
+
+          transaction.set(docRef, updatePayload, { merge: true });
+        }
+      });
+    } catch (err: any) {
+      console.error('[ServerAIUsageService] Falha ao estornar quota:', err.message);
+    }
+  }
 }

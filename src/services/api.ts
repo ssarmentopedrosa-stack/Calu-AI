@@ -19,13 +19,13 @@ export class CaluApiService {
     return headers;
   }
 
-  static async checkHealth(): Promise<{ status: string; version: string; environment: string; firebaseAdminReady: boolean }> {
+  static async checkHealth(): Promise<{ status: string; version: string }> {
     try {
       const res = await fetch('/api/health');
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.2.1', environment: 'local', firebaseAdminReady: false };
+      return { status: 'offline', version: '2.2.2' };
     }
   }
 
