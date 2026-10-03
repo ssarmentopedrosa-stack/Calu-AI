@@ -3,9 +3,12 @@ import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '.
 import { CaluMemoryItem } from '../../types';
 import { DateService } from '../dateService';
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryMemories = new Map<string, CaluMemoryItem[]>();
+
 export class MemoryService {
   /**
-   * Retrieves active Calu memories for user
+   * Retrieves active Calu memories for user from Firestore
    */
   static async getMemories(uid: string): Promise<CaluMemoryItem[]> {
     if (!uid) return [];
@@ -24,17 +27,12 @@ export class MemoryService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_memories_${uid}`);
-      const list: CaluMemoryItem[] = data ? JSON.parse(data) : [];
-      return list.filter(m => m.isActive);
-    } catch {
-      return [];
-    }
+    const list = inMemoryMemories.get(uid) || [];
+    return list.filter(m => m.isActive);
   }
 
   /**
-   * Adds a new memory item
+   * Adds a new memory item to Firestore
    */
   static async addMemory(
     uid: string,
@@ -55,27 +53,11 @@ export class MemoryService {
       updatedAt: now,
     };
 
-    if (isFirebaseConfigured) {
-      const path = `users/${uid}/memories/${memory.id}`;
-      try {
-        const docRef = doc(db, 'users', uid, 'memories', memory.id);
-        await setDoc(docRef, memory, { merge: true });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, path);
-      }
-    }
-
-    try {
-      const key = `calu_v2_memories_${uid}`;
-      const data = localStorage.getItem(key);
-      const list: CaluMemoryItem[] = data ? JSON.parse(data) : [];
-      list.unshift(memory);
-      localStorage.setItem(key, JSON.stringify(list));
-    } catch {}
+    await this.saveMemory(memory);
   }
 
   /**
-   * Saves or updates a memory item directly
+   * Saves or updates a memory item directly in Firestore
    */
   static async saveMemory(memory: CaluMemoryItem): Promise<void> {
     if (!memory.uid || !memory.id) return;
@@ -88,24 +70,20 @@ export class MemoryService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
-    }
-
-    try {
-      const key = `calu_v2_memories_${memory.uid}`;
-      const data = localStorage.getItem(key);
-      const list: CaluMemoryItem[] = data ? JSON.parse(data) : [];
+    } else {
+      const list = inMemoryMemories.get(memory.uid) || [];
       const idx = list.findIndex(m => m.id === memory.id);
       if (idx >= 0) {
         list[idx] = memory;
       } else {
         list.unshift(memory);
       }
-      localStorage.setItem(key, JSON.stringify(list));
-    } catch {}
+      inMemoryMemories.set(memory.uid, list);
+    }
   }
 
   /**
-   * Deletes a memory item
+   * Deletes a memory item from Firestore
    */
   static async deleteMemory(uid: string, id: string): Promise<void> {
     if (!uid || !id) return;
@@ -118,16 +96,9 @@ export class MemoryService {
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
       }
+    } else {
+      const list = inMemoryMemories.get(uid) || [];
+      inMemoryMemories.set(uid, list.filter(m => m.id !== id));
     }
-
-    try {
-      const key = `calu_v2_memories_${uid}`;
-      const data = localStorage.getItem(key);
-      if (data) {
-        const list: CaluMemoryItem[] = JSON.parse(data);
-        const filtered = list.filter(m => m.id !== id);
-        localStorage.setItem(key, JSON.stringify(filtered));
-      }
-    } catch {}
   }
 }

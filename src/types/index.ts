@@ -19,12 +19,17 @@ export interface NutritionalDatabaseItem {
   icon?: string;
 }
 
+export type ConfidenceTier = 'HIGH' | 'MEDIUM' | 'LOW';
+
 export interface FoodItem {
   id: string;
   name: string;
   estimatedQuantity: number;
   unit: string;
+  normalizedQuantity?: number;
+  normalizedUnit?: string;
   confidence?: number;
+  confidenceTier?: ConfidenceTier;
   calories: number;
   protein: number;
   carbohydrates: number;

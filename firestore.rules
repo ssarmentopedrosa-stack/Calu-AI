@@ -15,14 +15,23 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    // Default deny for all other collections
+    // Default deny for all unspecified collections
     match /{document=**} {
       allow read, write: if false;
     }
 
     // User profile and subcollections
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isOwner(userId);
+      // Client cannot elevate privileges or mutate security fields
+      allow create, update: if isOwner(userId) && (
+        !('role' in request.resource.data) &&
+        !('plan' in request.resource.data) &&
+        !('quota' in request.resource.data) &&
+        !('subscriptionStatus' in request.resource.data) &&
+        !('admin' in request.resource.data)
+      );
+      allow delete: if isOwner(userId);
 
       // Meals subcollection
       match /meals/{mealId} {
@@ -50,8 +59,11 @@ service cloud.firestore {
       }
 
       // AI Chat messages subcollection
+      // Client can read their history, but cannot spoof Calu messages
       match /chatMessages/{messageId} {
-        allow read, write: if isOwner(userId) && isValidId(messageId);
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(messageId) && request.resource.data.sender == 'user';
+        allow update, delete: if isOwner(userId) && isValidId(messageId);
       }
 
       // AI Usage subcollection (Strictly server-side authoritative)
@@ -63,11 +75,14 @@ service cloud.firestore {
       // Preferences and profile document
       match /preferences/{docId} {
         allow read: if isOwner(userId);
-        // Client SDK cannot elevate own account to premium directly
+        // Client SDK cannot elevate own account to premium or admin directly
         allow create, update: if isOwner(userId) && (
-          !('plan' in request.resource.data) ||
-          request.resource.data.plan == 'free' ||
-          (resource != null && resource.data.plan == request.resource.data.plan)
+          !('role' in request.resource.data) &&
+          !('admin' in request.resource.data) &&
+          !('quota' in request.resource.data) &&
+          (!('plan' in request.resource.data) ||
+           request.resource.data.plan == 'free' ||
+           (resource != null && resource.data.plan == request.resource.data.plan))
         );
         allow delete: if isOwner(userId);
       }

@@ -4,6 +4,9 @@ import { WeightLog } from '../../types';
 import { DateService } from '../dateService';
 import { UserService } from './UserService';
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryWeightLogs = new Map<string, WeightLog[]>();
+
 export class WeightService {
   /**
    * Retrieves weight logs chronologically from Firestore
@@ -25,16 +28,12 @@ export class WeightService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_weights_${uid}`);
-      return data ? JSON.parse(data) : [];
-    } catch {
-      return [];
-    }
+    const list = inMemoryWeightLogs.get(uid) || [];
+    return [...list].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   /**
-   * Adds or updates a weight entry for a date
+   * Adds or updates a weight entry for a date in Firestore
    */
   static async addWeight(uid: string, weightKg: number, date: string, notes?: string): Promise<void> {
     if (!uid || weightKg <= 0) return;
@@ -57,21 +56,17 @@ export class WeightService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
-    }
-
-    try {
-      const key = `calu_v2_weights_${uid}`;
-      const data = localStorage.getItem(key);
-      const list: WeightLog[] = data ? JSON.parse(data) : [];
+    } else {
+      const list = inMemoryWeightLogs.get(uid) || [];
       const idx = list.findIndex(w => w.date === date);
       if (idx >= 0) {
         list[idx] = log;
       } else {
         list.push(log);
-        list.sort((a, b) => a.date.localeCompare(b.date));
       }
-      localStorage.setItem(key, JSON.stringify(list));
-    } catch {}
+      list.sort((a, b) => a.date.localeCompare(b.date));
+      inMemoryWeightLogs.set(uid, list);
+    }
 
     // Update weight in profile
     const profile = await UserService.getProfile(uid);

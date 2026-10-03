@@ -5,16 +5,36 @@ import { DateService } from '../../src/services/dateService.ts';
 
 export type AIActionType = 'mealAnalysis' | 'chat' | 'dailyInsight';
 
+export interface QuotaCheckResult {
+  allowed: boolean;
+  remaining: number;
+  reason?: 'RATE_LIMITED' | 'QUOTA_UNAVAILABLE' | 'LIMIT_EXCEEDED';
+}
+
+// In-memory atomic store used strictly for test/dev environments when Firebase Admin credentials are not attached
+const inMemoryQuotaStore: Map<string, { mealAnalyses: number; chatMessages: number; dailyInsights: number }> = new Map();
+
 export class ServerAIUsageService {
+  /**
+   * Resets in-memory quota store (useful for automated testing)
+   */
+  static resetInMemoryStore() {
+    inMemoryQuotaStore.clear();
+  }
+
   /**
    * Checks and atomically increments AI action counters in Firestore:
    * users/{uid}/aiUsage/{YYYY-MM-DD}
+   * 
+   * CRITICAL SECURITY PRINCIPLE: FAIL-CLOSED.
+   * If Firestore is down, errors, or fails to verify quota, the call is REJECTED.
+   * Gemini is NEVER called without verified quota.
    */
   static async checkAndIncrement(
     uid: string,
     action: AIActionType,
     isPremium = false
-  ): Promise<{ allowed: boolean; remaining: number }> {
+  ): Promise<QuotaCheckResult> {
     const limits = isPremium ? AI_LIMITS.premium : AI_LIMITS.free;
     const maxLimit =
       action === 'mealAnalysis'
@@ -25,9 +45,34 @@ export class ServerAIUsageService {
 
     const todayDate = DateService.getLocalDate();
 
-    // If Firebase Admin is not ready (e.g. offline dev demo mode)
+    // Dev/Test Fallback when Firebase Admin is not initialized
     if (!isFirebaseAdminReady()) {
-      return { allowed: true, remaining: maxLimit - 1 };
+      if (process.env.NODE_ENV === 'production') {
+        // In production, failure to initialize Firebase Admin MUST fail closed
+        console.error('[ServerAIUsageService] FAIL-CLOSED: Firebase Admin não inicializado em produção.');
+        return { allowed: false, remaining: 0, reason: 'QUOTA_UNAVAILABLE' };
+      }
+
+      // In local dev/testing, enforce atomic in-memory quota limits (strictly no bypass)
+      const key = `${uid}_${todayDate}`;
+      const userUsage = inMemoryQuotaStore.get(key) || { mealAnalyses: 0, chatMessages: 0, dailyInsights: 0 };
+      const currentCount =
+        action === 'mealAnalysis'
+          ? userUsage.mealAnalyses
+          : action === 'chat'
+          ? userUsage.chatMessages
+          : userUsage.dailyInsights;
+
+      if (currentCount >= maxLimit) {
+        return { allowed: false, remaining: 0, reason: 'LIMIT_EXCEEDED' };
+      }
+
+      if (action === 'mealAnalysis') userUsage.mealAnalyses += 1;
+      else if (action === 'chat') userUsage.chatMessages += 1;
+      else userUsage.dailyInsights += 1;
+
+      inMemoryQuotaStore.set(key, userUsage);
+      return { allowed: true, remaining: maxLimit - (currentCount + 1) };
     }
 
     const db = getAdminDb();
@@ -53,7 +98,7 @@ export class ServerAIUsageService {
             : data.dailyInsights || 0;
 
         if (currentCount >= maxLimit) {
-          return { allowed: false, remaining: 0 };
+          return { allowed: false, remaining: 0, reason: 'LIMIT_EXCEEDED' as const };
         }
 
         const newCount = currentCount + 1;
@@ -78,9 +123,9 @@ export class ServerAIUsageService {
 
       return result;
     } catch (err: any) {
-      console.error('[ServerAIUsageService] Erro na transação de quota:', err.message);
-      // Fallback: don't permanently brick user on transient DB error, but enforce safety
-      return { allowed: true, remaining: 1 };
+      // FAIL-CLOSED: On transient Firestore/Network error, DENY request.
+      console.error('[ServerAIUsageService] FAIL-CLOSED: Erro na transação de quota:', err.message);
+      return { allowed: false, remaining: 0, reason: 'QUOTA_UNAVAILABLE' };
     }
   }
 
@@ -90,7 +135,13 @@ export class ServerAIUsageService {
   static async getTodayUsage(uid: string) {
     const todayDate = DateService.getLocalDate();
     if (!isFirebaseAdminReady()) {
-      return { mealAnalyses: 0, chatMessages: 0, dailyInsights: 0 };
+      const key = `${uid}_${todayDate}`;
+      const record = inMemoryQuotaStore.get(key);
+      return {
+        mealAnalyses: record?.mealAnalyses || 0,
+        chatMessages: record?.chatMessages || 0,
+        dailyInsights: record?.dailyInsights || 0,
+      };
     }
 
     try {

@@ -9,7 +9,9 @@ export class NutritionCalculator {
     dbItem: NutritionalDatabaseItem,
     quantityInGramsOrMl: number,
     unit: string,
-    confidence = 1.0
+    confidence = 1.0,
+    originalQuantity?: number,
+    originalUnit?: string
   ): FoodItem {
     const qty = Math.max(0, quantityInGramsOrMl);
     const ratio = qty / 100;
@@ -20,12 +22,17 @@ export class NutritionCalculator {
     const rawFat = dbItem.fatPer100g * ratio;
     const rawFiber = dbItem.fiberPer100g * ratio;
 
+    const confidenceTier = confidence >= 0.85 ? 'HIGH' : confidence >= 0.60 ? 'MEDIUM' : 'LOW';
+
     return {
       id: 'food_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       name: dbItem.name,
-      estimatedQuantity: qty,
-      unit: unit || 'g',
+      estimatedQuantity: originalQuantity !== undefined ? originalQuantity : qty,
+      unit: originalUnit || unit || 'g',
+      normalizedQuantity: qty,
+      normalizedUnit: 'g',
       confidence,
+      confidenceTier,
       calories: Math.round(rawCalories),
       protein: Number(rawProtein.toFixed(1)),
       carbohydrates: Number(rawCarbs.toFixed(1)),

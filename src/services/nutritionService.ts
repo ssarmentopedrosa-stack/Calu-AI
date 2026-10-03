@@ -49,6 +49,43 @@ export class NutritionService {
   }
 
   /**
+   * Looks up a food with confidence level and tier
+   */
+  static findFoodWithConfidence(query: string): {
+    item: NutritionalDatabaseItem;
+    confidence: number;
+    tier: 'HIGH' | 'MEDIUM' | 'LOW';
+  } | null {
+    if (!query) return null;
+    const clean = query.trim().toLowerCase();
+
+    // 1. Exact match on name (HIGH confidence)
+    const exact = FOOD_DATABASE.find(f => f.name.toLowerCase() === clean);
+    if (exact) return { item: exact, confidence: 0.98, tier: 'HIGH' };
+
+    // 2. Exact match on aliases (HIGH confidence)
+    const aliasMatch = FOOD_DATABASE.find(f =>
+      f.aliases.some(a => a.toLowerCase() === clean)
+    );
+    if (aliasMatch) return { item: aliasMatch, confidence: 0.92, tier: 'HIGH' };
+
+    // 3. Normalized / clean inclusion match (MEDIUM confidence)
+    const normalizedMatch = FOOD_DATABASE.find(f => {
+      const nameLower = f.name.toLowerCase();
+      return nameLower.includes(clean) || clean.includes(nameLower);
+    });
+    if (normalizedMatch) return { item: normalizedMatch, confidence: 0.78, tier: 'MEDIUM' };
+
+    // 4. Alias inclusion match (MEDIUM-LOW confidence)
+    const partialAlias = FOOD_DATABASE.find(f =>
+      f.aliases.some(a => clean.includes(a.toLowerCase()) || a.toLowerCase().includes(clean))
+    );
+    if (partialAlias) return { item: partialAlias, confidence: 0.65, tier: 'MEDIUM' };
+
+    return null;
+  }
+
+  /**
    * Enriches AI identified foods with real verified data from the database.
    * If a food is not found, it is reported transparently without inventing numbers.
    */
@@ -60,20 +97,23 @@ export class NutritionService {
     const unmatchedFoods: string[] = [];
 
     for (const item of identifiedFoods) {
-      const dbMatch = this.findFood(item.name);
+      const match = this.findFoodWithConfidence(item.name);
 
-      if (dbMatch) {
+      if (match) {
+        const dbMatch = match.item;
         // Convert portions if unit is common Brazilian household measure
-        let gramsOrMl = item.estimatedQuantity;
+        let normalizedGramsOrMl = item.estimatedQuantity;
         if (item.unit === 'unidade' || item.unit === 'porção' || item.unit === 'fatia' || item.unit === 'concha' || item.unit === 'colher de sopa') {
-          gramsOrMl = item.estimatedQuantity * dbMatch.portionMultiplier;
+          normalizedGramsOrMl = item.estimatedQuantity * dbMatch.portionMultiplier;
         }
 
         const calculated = NutritionCalculator.calculateFromDbItem(
           dbMatch,
-          gramsOrMl,
+          normalizedGramsOrMl,
           item.unit || 'g',
-          item.confidence || 0.85
+          match.confidence,
+          item.estimatedQuantity,
+          item.unit || 'g'
         );
         calculatedFoods.push(calculated);
       } else {

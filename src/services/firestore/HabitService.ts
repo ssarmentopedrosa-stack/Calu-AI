@@ -10,9 +10,12 @@ export const DEFAULT_CLEAN_HABITS: HabitState = {
   goodSleepMet: 'not_recorded',
 };
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryHabits = new Map<string, Record<string, HabitState>>();
+
 export class HabitService {
   /**
-   * Retrieves habit status for a specific local date
+   * Retrieves habit status for a specific local date from Firestore
    */
   static async getHabits(uid: string, date: string): Promise<HabitState> {
     if (!uid) return DEFAULT_CLEAN_HABITS;
@@ -29,17 +32,12 @@ export class HabitService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_habits_${uid}`);
-      const map: Record<string, HabitState> = data ? JSON.parse(data) : {};
-      return map[date] || DEFAULT_CLEAN_HABITS;
-    } catch {
-      return DEFAULT_CLEAN_HABITS;
-    }
+    const userMap = inMemoryHabits.get(uid) || {};
+    return userMap[date] || DEFAULT_CLEAN_HABITS;
   }
 
   /**
-   * Saves habit state for a specific date
+   * Saves habit state for a specific date to Firestore
    */
   static async saveHabits(uid: string, date: string, habits: HabitState): Promise<void> {
     if (!uid) return;
@@ -51,14 +49,10 @@ export class HabitService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
+    } else {
+      const userMap = inMemoryHabits.get(uid) || {};
+      userMap[date] = habits;
+      inMemoryHabits.set(uid, userMap);
     }
-
-    try {
-      const key = `calu_v2_habits_${uid}`;
-      const data = localStorage.getItem(key);
-      const map: Record<string, HabitState> = data ? JSON.parse(data) : {};
-      map[date] = habits;
-      localStorage.setItem(key, JSON.stringify(map));
-    } catch {}
   }
 }

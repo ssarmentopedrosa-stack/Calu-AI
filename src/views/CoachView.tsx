@@ -116,11 +116,6 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
       };
 
       setMessages([...updatedMessages, caluMsg]);
-
-      // Persist assistant message to Firestore
-      if (user.uid) {
-        await ChatService.saveChatMessage(user.uid, caluMsg);
-      }
     } catch {
       const fallbackMsg: ChatMessage = {
         id: 'msg_err_' + Date.now(),

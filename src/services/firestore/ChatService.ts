@@ -3,6 +3,9 @@ import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '.
 import { ChatMessage } from '../../types';
 import { DateService } from '../dateService';
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryChatMessages = new Map<string, ChatMessage[]>();
+
 export class ChatService {
   /**
    * Retrieves conversation history for user from Firestore
@@ -24,12 +27,8 @@ export class ChatService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_chat_${uid}`);
-      return data ? JSON.parse(data) : [];
-    } catch {
-      return [];
-    }
+    const list = inMemoryChatMessages.get(uid) || [];
+    return list.slice(-limitCount);
   }
 
   /**
@@ -52,15 +51,11 @@ export class ChatService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
-    }
-
-    try {
-      const key = `calu_v2_chat_${uid}`;
-      const data = localStorage.getItem(key);
-      const list: ChatMessage[] = data ? JSON.parse(data) : [];
+    } else {
+      const list = inMemoryChatMessages.get(uid) || [];
       list.push(validated);
-      localStorage.setItem(key, JSON.stringify(list));
-    } catch {}
+      inMemoryChatMessages.set(uid, list);
+    }
   }
 
   /**
@@ -80,10 +75,8 @@ export class ChatService {
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
       }
+    } else {
+      inMemoryChatMessages.delete(uid);
     }
-
-    try {
-      localStorage.removeItem(`calu_v2_chat_${uid}`);
-    } catch {}
   }
 }

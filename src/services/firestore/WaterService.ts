@@ -3,9 +3,12 @@ import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '.
 import { WaterLog } from '../../types';
 import { DateService } from '../dateService';
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryWaterLogs = new Map<string, WaterLog[]>();
+
 export class WaterService {
   /**
-   * Retrieves total water consumed in ml for a specific local date
+   * Retrieves total water consumed in ml for a specific local date from Firestore
    */
   static async getWaterByDate(uid: string, date: string): Promise<number> {
     if (!uid) return 0;
@@ -27,17 +30,12 @@ export class WaterService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_water_${uid}`);
-      const logs: WaterLog[] = data ? JSON.parse(data) : [];
-      return logs.filter(l => l.date === date).reduce((acc, l) => acc + (l.amountMl || 0), 0);
-    } catch {
-      return 0;
-    }
+    const logs = inMemoryWaterLogs.get(uid) || [];
+    return logs.filter(l => l.date === date).reduce((acc, l) => acc + (l.amountMl || 0), 0);
   }
 
   /**
-   * Adds a water entry (delta in ml)
+   * Adds a water entry (delta in ml) to Firestore
    */
   static async addWater(uid: string, date: string, deltaMl: number): Promise<number> {
     if (!uid || deltaMl <= 0) return await this.getWaterByDate(uid, date);
@@ -58,16 +56,11 @@ export class WaterService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
-    }
-
-    // Update non-critical local cache
-    try {
-      const key = `calu_v2_water_${uid}`;
-      const data = localStorage.getItem(key);
-      const logs: WaterLog[] = data ? JSON.parse(data) : [];
+    } else {
+      const logs = inMemoryWaterLogs.get(uid) || [];
       logs.push(log);
-      localStorage.setItem(key, JSON.stringify(logs));
-    } catch {}
+      inMemoryWaterLogs.set(uid, logs);
+    }
 
     return await this.getWaterByDate(uid, date);
   }

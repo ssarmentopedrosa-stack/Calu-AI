@@ -25,7 +25,7 @@ export class CaluApiService {
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.1.0', environment: 'local', firebaseAdminReady: false };
+      return { status: 'offline', version: '2.2.0', environment: 'local', firebaseAdminReady: false };
     }
   }
 
@@ -99,13 +99,22 @@ export class CaluApiService {
   ): Promise<string> {
     try {
       const headers = await this.getAuthHeaders();
+      const lastUserMsg = [...messages].reverse().find(m => m.sender === 'user')?.text || '';
       const res = await fetch('/api/chat-calu', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ messages }), // Server reconstructs context directly from Firestore
+        body: JSON.stringify({ message: lastUserMsg, messages }),
       });
-      if (!res.ok) throw new Error('Chat API error');
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        if (res.status === 429) {
+          return 'Você atingiu o limite de mensagens diárias com a Calu para o seu plano.';
+        }
+        if (res.status === 503) {
+          return 'O serviço de atendimento está temporariamente indisponível. Tente novamente em alguns minutos.';
+        }
+        return data.error?.message || 'Tive uma breve oscilação de conexão, por favor tente enviar sua mensagem novamente.';
+      }
       return data.reply;
     } catch {
       return 'Tive uma breve oscilação de conexão, por favor tente enviar sua mensagem novamente.';

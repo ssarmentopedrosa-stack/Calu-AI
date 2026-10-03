@@ -29,6 +29,10 @@ export const createCleanProfile = (uid: string, name = 'Usuário', email?: strin
   updatedAt: DateService.getLocalDateTime(),
 });
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryProfiles = new Map<string, UserProfile>();
+const inMemoryGoals = new Map<string, NutritionGoals>();
+
 export class UserService {
   static async getProfile(uid: string): Promise<UserProfile | null> {
     if (!uid) return null;
@@ -40,22 +44,17 @@ export class UserService {
         if (snap.exists()) {
           return snap.data() as UserProfile;
         }
+        return null;
       } catch (err) {
         handleFirestoreError(err, OperationType.GET, path);
       }
     }
 
-    // Local fallback for offline/demo
-    try {
-      const local = localStorage.getItem(`calu_v2_profile_${uid}`);
-      return local ? JSON.parse(local) : null;
-    } catch {
-      return null;
-    }
+    return inMemoryProfiles.get(uid) || null;
   }
 
   static async saveProfile(profile: UserProfile): Promise<void> {
-    const updated = {
+    const updated: UserProfile = {
       ...profile,
       updatedAt: DateService.getLocalDateTime(),
     };
@@ -67,12 +66,9 @@ export class UserService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
+    } else {
+      inMemoryProfiles.set(profile.uid, updated);
     }
-
-    // Keep temporary non-critical local cache
-    try {
-      localStorage.setItem(`calu_v2_profile_${profile.uid}`, JSON.stringify(updated));
-    } catch {}
   }
 
   static async getGoals(uid: string): Promise<NutritionGoals> {
@@ -85,21 +81,17 @@ export class UserService {
         if (snap.exists()) {
           return snap.data() as NutritionGoals;
         }
+        return DEFAULT_INITIAL_GOALS;
       } catch (err) {
         handleFirestoreError(err, OperationType.GET, path);
       }
     }
 
-    try {
-      const local = localStorage.getItem(`calu_v2_goals_${uid}`);
-      return local ? JSON.parse(local) : DEFAULT_INITIAL_GOALS;
-    } catch {
-      return DEFAULT_INITIAL_GOALS;
-    }
+    return inMemoryGoals.get(uid) || DEFAULT_INITIAL_GOALS;
   }
 
   static async saveGoals(uid: string, goals: NutritionGoals): Promise<void> {
-    const updated = {
+    const updated: NutritionGoals = {
       ...goals,
       updatedAt: DateService.getLocalDateTime(),
     };
@@ -111,10 +103,8 @@ export class UserService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
+    } else {
+      inMemoryGoals.set(uid, updated);
     }
-
-    try {
-      localStorage.setItem(`calu_v2_goals_${uid}`, JSON.stringify(updated));
-    } catch {}
   }
 }

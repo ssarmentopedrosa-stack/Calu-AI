@@ -13,6 +13,9 @@ import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '.
 import { Meal } from '../../types';
 import { DateService } from '../dateService';
 
+// Ephemeral in-memory fallback store used exclusively during offline development/testing
+const inMemoryMeals = new Map<string, Meal[]>();
+
 export class MealService {
   /**
    * Retrieves meals for a specific local date from Firestore
@@ -34,19 +37,12 @@ export class MealService {
       }
     }
 
-    // Local fallback for offline/demo
-    try {
-      const data = localStorage.getItem(`calu_v2_meals_${uid}`);
-      if (!data) return [];
-      const all: Meal[] = JSON.parse(data);
-      return all.filter(m => m.date === date);
-    } catch {
-      return [];
-    }
+    const userMeals = inMemoryMeals.get(uid) || [];
+    return userMeals.filter(m => m.date === date);
   }
 
   /**
-   * Retrieves recent meals for history and reports
+   * Retrieves recent meals for history and reports from Firestore
    */
   static async getAllMeals(uid: string, limitCount = 50): Promise<Meal[]> {
     if (!uid) return [];
@@ -65,14 +61,8 @@ export class MealService {
       }
     }
 
-    try {
-      const data = localStorage.getItem(`calu_v2_meals_${uid}`);
-      if (!data) return [];
-      const all: Meal[] = JSON.parse(data);
-      return all.slice(0, limitCount);
-    } catch {
-      return [];
-    }
+    const userMeals = inMemoryMeals.get(uid) || [];
+    return userMeals.slice(0, limitCount);
   }
 
   /**
@@ -95,21 +85,16 @@ export class MealService {
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }
-    }
-
-    // Temporary non-authoritative local cache
-    try {
-      const key = `calu_v2_meals_${meal.uid}`;
-      const data = localStorage.getItem(key);
-      const all: Meal[] = data ? JSON.parse(data) : [];
-      const idx = all.findIndex(m => m.id === meal.id);
+    } else {
+      const list = inMemoryMeals.get(meal.uid) || [];
+      const idx = list.findIndex(m => m.id === meal.id);
       if (idx >= 0) {
-        all[idx] = validatedMeal;
+        list[idx] = validatedMeal;
       } else {
-        all.unshift(validatedMeal);
+        list.unshift(validatedMeal);
       }
-      localStorage.setItem(key, JSON.stringify(all));
-    } catch {}
+      inMemoryMeals.set(meal.uid, list);
+    }
   }
 
   /**
@@ -126,17 +111,10 @@ export class MealService {
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
       }
+    } else {
+      const list = inMemoryMeals.get(uid) || [];
+      inMemoryMeals.set(uid, list.filter(m => m.id !== mealId));
     }
-
-    try {
-      const key = `calu_v2_meals_${uid}`;
-      const data = localStorage.getItem(key);
-      if (data) {
-        const all: Meal[] = JSON.parse(data);
-        const filtered = all.filter(m => m.id !== mealId);
-        localStorage.setItem(key, JSON.stringify(filtered));
-      }
-    } catch {}
   }
 
   /**
