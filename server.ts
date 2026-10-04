@@ -784,6 +784,8 @@ app.post(
         });
       }
 
+      if (checkIdempotency(req, res)) return;
+
       const { text, userNotes } = parseResult.data;
       const uid = req.user!.uid;
 
@@ -812,49 +814,54 @@ app.post(
         });
       }
 
-      const aiResult = await aiProvider.analyzeMealText(text, userNotes);
+      try {
+        const aiResult = await aiProvider.analyzeMealText(text, userNotes);
 
-      if (!aiResult || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
-        return res.status(422).json({
-          success: false,
-          error: {
-            code: ERROR_CODES.AI_ANALYSIS_FAILED,
-            message: 'Não foi possível identificar alimentos na sua descrição.',
-          },
-        });
+        if (!aiResult || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
+          return res.status(422).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.AI_ANALYSIS_FAILED,
+              message: 'Não foi possível identificar alimentos na sua descrição.',
+            },
+          });
+        }
+
+        const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
+          aiResult.identifiedFoods
+        );
+
+        if (calculatedFoods.length === 0) {
+          return res.status(422).json({
+            success: false,
+            error: {
+              code: ERROR_CODES.NOT_FOUND,
+              message:
+                'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.',
+            },
+          });
+        }
+
+        const totals = NutritionCalculator.calculateTotals(calculatedFoods);
+
+        const responsePayload = {
+          success: true,
+          mealType: aiResult.mealType || 'lunch',
+          mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Registrada',
+          identifiedFoods: aiResult.identifiedFoods,
+          calculatedFoods,
+          total: totals,
+          uncertainties: aiResult.uncertainties || [],
+        };
+
+        saveIdempotency(req, responsePayload);
+        return res.json(responsePayload);
+      } catch (innerErr: any) {
+        await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
+        throw innerErr;
       }
-
-      const { calculatedFoods, unmatchedFoods } = NutritionService.enrichIdentifiedFoods(
-        aiResult.identifiedFoods
-      );
-
-      if (calculatedFoods.length === 0) {
-        return res.status(422).json({
-          success: false,
-          error: {
-            code: ERROR_CODES.NOT_FOUND,
-            message:
-              'Os alimentos descritos não constam na base padrão. Por favor, registre manualmente.',
-          },
-        });
-      }
-
-      const totals = NutritionCalculator.calculateTotals(calculatedFoods);
-
-      return res.json({
-        success: true,
-        mealType: aiResult.mealType || 'lunch',
-        mealNameSuggestion: aiResult.mealNameSuggestion || 'Refeição Registrada',
-        identifiedFoods: aiResult.identifiedFoods,
-        calculatedFoods,
-        total: totals,
-        uncertainties: aiResult.uncertainties || [],
-      });
     } catch (error: any) {
       console.error('[API /analyze-meal-text] Erro');
-      if (req.user?.uid) {
-        await ServerAIUsageService.refundAction(req.user.uid, 'mealAnalysis');
-      }
       return res.status(500).json({
         success: false,
         error: {
@@ -873,6 +880,8 @@ app.post(
   expensiveAiRateLimiter,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
+      if (checkIdempotency(req, res)) return;
+
       const uid = req.user!.uid;
 
       const rateCheck = await ServerAIUsageService.checkAndIncrement(
@@ -916,13 +925,17 @@ app.post(
         });
       }
 
-      const insight = await aiProvider.generateDailyInsight(userContext);
-      return res.json({ success: true, insight });
+      try {
+        const insight = await aiProvider.generateDailyInsight(userContext);
+        const responsePayload = { success: true, insight };
+        saveIdempotency(req, responsePayload);
+        return res.json(responsePayload);
+      } catch (innerErr: any) {
+        await ServerAIUsageService.refundAction(uid, 'dailyInsight', rateCheck.reservationId);
+        throw innerErr;
+      }
     } catch (error: any) {
       console.error('[API /daily-insight] Erro');
-      if (req.user?.uid) {
-        await ServerAIUsageService.refundAction(req.user.uid, 'dailyInsight');
-      }
       return res.status(500).json({
         success: false,
         error: {
@@ -1083,7 +1096,7 @@ app.post(
             '[API /chat-calu] FAIL-CLOSED: Erro crítico ao persistir mensagens:',
             saveErr.message
           );
-          await ServerAIUsageService.refundAction(uid, 'chat');
+          await ServerAIUsageService.refundAction(uid, 'chat', rateCheck.reservationId);
           return res.status(503).json({
             success: false,
             error: {
@@ -1102,9 +1115,6 @@ app.post(
       });
     } catch (error: any) {
       console.error('[API /chat-calu] Erro');
-      if (req.user?.uid) {
-        await ServerAIUsageService.refundAction(req.user.uid, 'chat');
-      }
       return res.status(500).json({
         success: false,
         error: {
@@ -1154,7 +1164,7 @@ app.get(
 
       const exportBundle = {
         app: 'CALU AI',
-        schemaVersion: '2.2.2',
+        schemaVersion: APP_VERSION,
         exportedAt: DateService.getLocalDateTime(),
         profile: profileSnap.exists ? profileSnap.data() : null,
         goals: goalsSnap.exists ? goalsSnap.data() : null,
@@ -1317,7 +1327,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CALU AI V2.2.2] Servidor ativo em http://0.0.0.0:${PORT}`);
+    console.log(`[CALU AI V${APP_VERSION}] Servidor ativo em http://0.0.0.0:${PORT}`);
   });
 }
 

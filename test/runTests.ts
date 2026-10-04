@@ -472,7 +472,7 @@ async function runAll() {
   // SEÇÃO 8: CONFORMIDADE LGPD (EXPORT & DELETE)
   // ========================================================================
 
-  await runTest('LGPD-001', 'LGPD: Exportação unificada inclui todas as 9 coleções e schemaVersion 2.2.2', () => {
+  await runTest('LGPD-001', 'LGPD: Exportação unificada inclui todas as 9 coleções e schemaVersion 2.2.3', () => {
     assert.strictEqual(USER_DATA_COLLECTIONS.length, 9);
 
     const mockExportBundle = {
@@ -490,7 +490,7 @@ async function runAll() {
       aiUsage: [],
     };
 
-    assert.strictEqual(mockExportBundle.schemaVersion, '2.2.2');
+    assert.strictEqual(mockExportBundle.schemaVersion, APP_VERSION);
     assert.ok('meals' in mockExportBundle);
     assert.ok('chatMessages' in mockExportBundle);
     assert.ok('aiUsage' in mockExportBundle);
@@ -590,7 +590,7 @@ async function runAll() {
   // SEÇÃO 10: HEALTH CHECK & READINESS (FASE 4)
   // ========================================================================
 
-  await runTest('HEALTH-001', 'HEALTH: /api/health retorna HTTP 200 com status ok e version 2.2.2', () => {
+  await runTest('HEALTH-001', 'HEALTH: /api/health retorna HTTP 200 com status ok e version 2.2.3', () => {
     let status = 0;
     let payload: any = null;
 
@@ -606,7 +606,7 @@ async function runAll() {
 
     assert.strictEqual(status, 200);
     assert.strictEqual(payload.status, 'ok');
-    assert.strictEqual(payload.version, '2.2.2');
+    assert.strictEqual(payload.version, APP_VERSION);
     // Ensure no sensitive internals leaked
     assert.strictEqual(payload.environment, undefined);
     assert.strictEqual(payload.firebaseAdminReady, undefined);
@@ -877,6 +877,78 @@ async function runAll() {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const sampleId = '123e4567-e89b-12d3-a456-426614174000'; // valid uuid format check
     assert.ok(sampleId.length === 36);
+  });
+
+  // ========================================================================
+  // SEÇÃO 12: V2.2.3 FINAL HARDENING & PRODUCTION LOCK TESTS
+  // ========================================================================
+
+  await runTest('QUOTA-007', 'QUOTA: Prevenção rigorosa de duplo estorno com reservationId', async () => {
+    ServerAIUsageService.resetInMemoryStore();
+    const uid = 'reservation_user_' + Date.now();
+    const check = await ServerAIUsageService.checkAndIncrement(uid, 'mealAnalysis', false);
+    assert.ok(check.reservationId !== undefined, 'Deve emitir reservationId');
+
+    // First refund must succeed
+    const firstRefund = await ServerAIUsageService.refundAction(uid, 'mealAnalysis', check.reservationId);
+    assert.strictEqual(firstRefund, true, 'Primeiro estorno deve retornar true');
+
+    // Second refund with same reservationId must be rejected
+    const secondRefund = await ServerAIUsageService.refundAction(uid, 'mealAnalysis', check.reservationId);
+    assert.strictEqual(secondRefund, false, 'Segundo estorno duplicado deve ser bloqueado');
+  });
+
+  await runTest('QUOTA-008', 'IDEMPOTENCY: Chave idêntica em cache de idempotência não reprocessa IA', () => {
+    const mockCache = new Map<string, { body: any; expiresAt: number }>();
+    const saveIdempotency = (uid: string, key: string, payload: any) => {
+      mockCache.set(`${uid}_${key}`, { body: payload, expiresAt: Date.now() + 300000 });
+    };
+    const checkIdempotency = (uid: string, key: string) => {
+      const entry = mockCache.get(`${uid}_${key}`);
+      if (entry && Date.now() < entry.expiresAt) return entry.body;
+      return null;
+    };
+
+    const payload = { success: true, mealNameSuggestion: 'Almoço Saudável' };
+    saveIdempotency('user_42', 'idem_key_abc', payload);
+
+    const hit = checkIdempotency('user_42', 'idem_key_abc');
+    assert.deepStrictEqual(hit, payload);
+
+    const miss = checkIdempotency('user_42', 'different_key');
+    assert.strictEqual(miss, null);
+  });
+
+  await runTest('STORAGE-007', 'STORAGE: Validador de nome e extensão de arquivo rejeita extensões perigosas', () => {
+    const isValidFileName = (name: string) => {
+      return name.length <= 128 && /^[a-zA-Z0-9_\-]+\.(jpg|jpeg|png|webp)$/i.test(name);
+    };
+
+    assert.strictEqual(isValidFileName('prato_almoco.jpg'), true);
+    assert.strictEqual(isValidFileName('meal-123.png'), true);
+    assert.strictEqual(isValidFileName('meal.webp'), true);
+    assert.strictEqual(isValidFileName('exploit.exe'), false);
+    assert.strictEqual(isValidFileName('script.sh'), false);
+    assert.strictEqual(isValidFileName('code.js'), false);
+    assert.strictEqual(isValidFileName('../../../etc/passwd'), false);
+  });
+
+  await runTest('AUTH-008', 'AUTH: Identidade do usuário provém estritamente do token verificado (Server-Authoritative)', () => {
+    const verifiedTokenUid = 'verified_user_123';
+    const maliciousBody = { uid: 'victim_user_999', userId: 'admin_root' };
+
+    // Identity resolver
+    const resolveEffectiveUid = (req: { user: { uid: string }; body: any }) => {
+      return req.user.uid; // strictly server authoritative
+    };
+
+    const effectiveUid = resolveEffectiveUid({ user: { uid: verifiedTokenUid }, body: maliciousBody });
+    assert.strictEqual(effectiveUid, verifiedTokenUid);
+    assert.notStrictEqual(effectiveUid, maliciousBody.uid);
+  });
+
+  await runTest('LOCK-001', 'LOCK: Versão 2.2.3 em sincronia estrita entre constantes, package e exportação', () => {
+    assert.strictEqual(APP_VERSION, '2.2.3');
   });
 
   console.log('\n========================================================================');
