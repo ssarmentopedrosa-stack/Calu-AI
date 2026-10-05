@@ -17,6 +17,9 @@ import { Meal, NutritionGoals, HabitState, UserProfile } from '../types';
 import { CaluMascot } from '../components/CaluMascot';
 import { CaluApiService } from '../services/api';
 
+import { InsightService } from '../services/firestore/InsightService';
+import { DateService } from '../services/dateService';
+
 interface HomeViewProps {
   user: UserProfile;
   goals: NutritionGoals;
@@ -54,30 +57,79 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const totalCarbs = Number(meals.reduce((acc, m) => acc + (m.totalCarbohydrates || 0), 0).toFixed(1));
   const totalFat = Number(meals.reduce((acc, m) => acc + (m.totalFat || 0), 0).toFixed(1));
 
+  const todayDate = DateService.getLocalDate();
   const [dailyInsight, setDailyInsight] = useState<string>(
-    meals.length === 0
-      ? 'Comece seu dia registrando sua primeira refeição ou copo d’água! A Calu acompanha você sem julgamentos.'
-      : 'Hoje seu ritmo de acompanhamento está ótimo! Você já registrou as principais refeições do seu dia.'
+    'Comece seu dia registrando sua primeira refeição ou copo d’água! A Calu acompanha você sem julgamentos.'
   );
   const [loadingInsight, setLoadingInsight] = useState(false);
+  const hasAttemptedRef = React.useRef(false);
 
-  const fetchInsight = async () => {
-    setLoadingInsight(true);
-    try {
-      const insight = await CaluApiService.getDailyInsight(meals, goals, habits);
-      setDailyInsight(insight);
-    } catch {
-      // Keep existing
-    } finally {
-      setLoadingInsight(false);
+  const fetchInsight = async (forceRefresh = false) => {
+    if (!user.uid) return;
+
+    if (!forceRefresh) {
+      const cached = await InsightService.getDailyInsight(user.uid, todayDate);
+      if (cached) {
+        setDailyInsight(cached);
+        return;
+      }
+    }
+
+    if (meals.length > 0) {
+      setLoadingInsight(true);
+      try {
+        const insight = await CaluApiService.getDailyInsight(meals, goals, habits);
+        if (insight) {
+          setDailyInsight(insight);
+          await InsightService.saveDailyInsight(user.uid, todayDate, insight);
+        }
+      } catch {
+        // Keep existing
+      } finally {
+        setLoadingInsight(false);
+      }
     }
   };
 
+  // Generate at most 1 time per day with cache in users/{uid}/insights/{date}, without refetching per meal
   useEffect(() => {
-    if (meals.length > 0) {
-      fetchInsight();
+    if (!user.uid) return;
+    let isCancelled = false;
+
+    async function loadOrGenerateInsight() {
+      // 1. Check cache first
+      const cached = await InsightService.getDailyInsight(user.uid, todayDate);
+      if (isCancelled) return;
+      if (cached) {
+        setDailyInsight(cached);
+        return;
+      }
+
+      // 2. Only generate once if meals exist and no cached insight
+      if (meals.length > 0 && !hasAttemptedRef.current && !loadingInsight) {
+        hasAttemptedRef.current = true;
+        setLoadingInsight(true);
+        try {
+          const insight = await CaluApiService.getDailyInsight(meals, goals, habits);
+          if (isCancelled) return;
+          if (insight) {
+            setDailyInsight(insight);
+            await InsightService.saveDailyInsight(user.uid, todayDate, insight);
+          }
+        } catch {
+          // Keep existing
+        } finally {
+          if (!isCancelled) setLoadingInsight(false);
+        }
+      }
     }
-  }, [meals.length]);
+
+    loadOrGenerateInsight();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user.uid, todayDate, meals.length > 0]);
 
   const caloriePercent = Math.min(100, Math.round((totalCalories / (goals.calories || 2000)) * 100));
   const proteinPercent = Math.min(100, Math.round((totalProtein / (goals.protein || 120)) * 100));
@@ -313,7 +365,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </div>
           <button
             type="button"
-            onClick={fetchInsight}
+            onClick={() => fetchInsight(true)}
             disabled={loadingInsight}
             className="text-slate-500 hover:text-slate-300 p-1 transition-colors"
             title="Atualizar insight"

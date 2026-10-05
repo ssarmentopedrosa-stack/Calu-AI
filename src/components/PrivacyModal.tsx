@@ -42,12 +42,13 @@ export const PrivacyModal: React.FC<PrivacyModalProps> = ({ onClose, onDataReset
     ) {
       try {
         setLoading(true);
-        setMessage('Excluindo conta e dados no servidor...');
-        await AuthService.deleteAccount();
+        setMessage('Excluindo conta, dados e arquivos permanentemente no servidor...');
+        await CaluApiService.deleteAccount();
+        await AuthService.signOut().catch(() => {});
         onDataReset();
         onClose();
       } catch (err: any) {
-        setMessage('Erro ao processar exclusão: ' + (err.message || 'Tente novamente.'));
+        setMessage('Erro ao processar exclusão: ' + (err.message || 'Falha no servidor. Tente novamente.'));
       } finally {
         setLoading(false);
       }

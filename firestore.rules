@@ -103,16 +103,20 @@ service cloud.firestore {
       // Preferences and profile document
       match /preferences/{docId} {
         allow read: if isOwner(userId);
-        // Client SDK cannot elevate own account to premium or admin directly
+        // Client SDK cannot write plan, role, admin or quota (Server Authoritative)
         allow create, update: if isOwner(userId) && (
           !('role' in request.resource.data) &&
           !('admin' in request.resource.data) &&
           !('quota' in request.resource.data) &&
-          (!('plan' in request.resource.data) ||
-           request.resource.data.plan == 'free' ||
-           (resource != null && resource.data.plan == request.resource.data.plan))
+          !('plan' in request.resource.data)
         );
         allow delete: if isOwner(userId);
+      }
+
+      // Subscription & Plan Status (Strictly server-side authoritative)
+      match /subscription/{docId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Only Firebase Admin SDK can write subscription/plan
       }
 
       // Goals document
@@ -122,6 +126,16 @@ service cloud.firestore {
                              && isValidId(docId)
                              && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
         allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      // Daily insight cache
+      match /insights/{date} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                             && isValidId(date)
+                             && request.resource.data.insight is string
+                             && request.resource.data.insight.size() <= 2000;
+        allow delete: if isOwner(userId) && isValidId(date);
       }
     }
   }

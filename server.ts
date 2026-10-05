@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
@@ -39,6 +39,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const app = express();
+app.set('trust proxy', 1);
 
 // Startup Environment Validation (Phase 19)
 function validateEnvironmentOnStartup() {
@@ -92,41 +93,57 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // 2. Security Headers via Helmet (Phase 10 & 21)
+const isDev = process.env.NODE_ENV !== 'production';
+
 app.use(
   helmet({
-    contentSecurityPolicy:
-      process.env.NODE_ENV === 'production'
-        ? {
-            directives: {
-              defaultSrc: ["'self'"],
-              scriptSrc: ["'self'", "'unsafe-inline'"],
-              styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-              fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-              imgSrc: [
-                "'self'",
-                'data:',
-                'blob:',
-                'https://*.googleusercontent.com',
-                'https://*.firebaseapp.com',
-                'https://firebasestorage.googleapis.com',
-              ],
-              connectSrc: [
-                "'self'",
-                'https://*.googleapis.com',
-                'https://*.firebaseio.com',
-                'https://identitytoolkit.googleapis.com',
-              ],
-              frameSrc: ["'self'", 'https://*.firebaseapp.com'],
-              objectSrc: ["'none'"],
-            },
-          }
-        : false, // Vite dev server and camera previews require relaxed CSP in dev
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "'unsafe-eval'",
+          'https://apis.google.com',
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        imgSrc: [
+          "'self'",
+          'data:',
+          'blob:',
+          'https://*.googleusercontent.com',
+          'https://*.firebaseapp.com',
+          'https://firebasestorage.googleapis.com',
+        ],
+        connectSrc: [
+          "'self'",
+          'https://*.googleapis.com',
+          'https://*.firebaseio.com',
+          'https://identitytoolkit.googleapis.com',
+          'https://securetoken.googleapis.com',
+          'https://apis.google.com',
+          'https://accounts.google.com',
+        ],
+        frameSrc: [
+          "'self'",
+          'https://*.firebaseapp.com',
+          'https://accounts.google.com',
+          'https://apis.google.com',
+        ],
+        frameAncestors: isDev
+          ? ["'self'", 'https://*.google.com', 'https://*.run.app', '*']
+          : ["'self'"],
+        objectSrc: ["'none'"],
+      },
+    },
+    frameguard: isDev ? false : undefined, // in dev, disable X-Frame-Options to allow AI Studio preview
     crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    crossOriginOpenerPolicy: isDev ? false : { policy: 'same-origin-allow-popups' },
   })
 );
 
-// 3. Explicit CORS: in production, strictly allow only authorized origins (Phase 10 & 20)
+// 3. Explicit CORS: ONLY on /api routes, never blocking static JS/CSS
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -135,6 +152,7 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 app.use(
+  '/api',
   cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile capacitor, curl, server-to-server)
@@ -160,6 +178,7 @@ const publicRateLimiter = rateLimit({
   max: 120, // 120 requests per 15 min
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: Request) => (req as AuthenticatedRequest).user?.uid || ipKeyGenerator(req.ip || '127.0.0.1'),
   message: {
     success: false,
     error: {
@@ -169,19 +188,13 @@ const publicRateLimiter = rateLimit({
   },
 });
 
-// Expensive AI Rate Limiter binds to both IP and UID to prevent IP-hopping abuse
+// Expensive AI Rate Limiter: keyGenerator by req.user.uid (fallback ipKeyGenerator)
 const expensiveAiRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 40, // 40 AI analysis/chat calls per 15 min window
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      return `${req.ip}_${authHeader.slice(7, 27)}`;
-    }
-    return req.ip || 'unknown';
-  },
+  keyGenerator: (req: Request) => (req as AuthenticatedRequest).user?.uid || ipKeyGenerator(req.ip || '127.0.0.1'),
   message: {
     success: false,
     error: {
@@ -196,6 +209,7 @@ const userAccountRateLimiter = rateLimit({
   max: 30, // 30 sensitive account exports/deletes per 15 min
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: Request) => (req as AuthenticatedRequest).user?.uid || ipKeyGenerator(req.ip || '127.0.0.1'),
   message: {
     success: false,
     error: {
@@ -263,6 +277,9 @@ export interface AIProvider {
   ): Promise<string>;
 }
 
+import { executeWithRetry } from './server/services/retryService.ts';
+export { executeWithRetry };
+
 // Server-side Gemini Provider implementation using @google/genai SDK (Phase 5 & 10)
 class GeminiProvider implements AIProvider {
   private ai: GoogleGenAI | null = null;
@@ -301,29 +318,11 @@ class GeminiProvider implements AIProvider {
   }
 
   private async executeWithRetry<T>(
-    fn: () => Promise<T>,
+    fn: (signal?: AbortSignal) => Promise<T>,
     timeoutMs: number,
     operationName: string
   ): Promise<T> {
-    const maxRetries = 2;
-    let attempt = 0;
-    while (attempt <= maxRetries) {
-      try {
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('AI_TIMEOUT')), timeoutMs)
-        );
-        return await Promise.race([fn(), timeoutPromise]);
-      } catch (err: any) {
-        attempt++;
-        if (attempt > maxRetries) {
-          console.error(`[GeminiProvider] Falha final em ${operationName} após ${attempt} tentativas:`, err?.message || err);
-          throw err;
-        }
-        const backoffMs = attempt * 400;
-        await new Promise(res => setTimeout(res, backoffMs));
-      }
-    }
-    throw new Error('AI_UNAVAILABLE');
+    return executeWithRetry(fn, timeoutMs, operationName);
   }
 
   async analyzeMealImage(base64Image: string, mimeType: string, userNotes?: string): Promise<any> {
@@ -703,6 +702,7 @@ app.post(
           !aiResult.identifiedFoods ||
           aiResult.identifiedFoods.length === 0
         ) {
+          await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
           return res.status(422).json({
             success: false,
             error: {
@@ -719,6 +719,7 @@ app.post(
 
         // If no foods could be matched in database, prompt manual confirmation instead of fabricating
         if (calculatedFoods.length === 0) {
+          await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
           return res.status(422).json({
             success: false,
             error: {
@@ -818,6 +819,7 @@ app.post(
         const aiResult = await aiProvider.analyzeMealText(text, userNotes);
 
         if (!aiResult || !aiResult.identifiedFoods || aiResult.identifiedFoods.length === 0) {
+          await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
           return res.status(422).json({
             success: false,
             error: {
@@ -832,6 +834,7 @@ app.post(
         );
 
         if (calculatedFoods.length === 0) {
+          await ServerAIUsageService.refundAction(uid, 'mealAnalysis', rateCheck.reservationId);
           return res.status(422).json({
             success: false,
             error: {
@@ -965,6 +968,8 @@ app.post(
         });
       }
 
+      if (checkIdempotency(req, res)) return;
+
       const uid = req.user!.uid;
 
       // Extract user's new message text
@@ -1060,7 +1065,20 @@ app.post(
       }
 
       // 4. Generate AI response with prompt injection mitigation
-      const reply = await aiProvider.chatWithCalu(history, userMessageText, userContext);
+      let reply: string;
+      try {
+        reply = await aiProvider.chatWithCalu(history, userMessageText, userContext);
+      } catch (aiErr: any) {
+        console.error('[API /chat-calu] Erro no Gemini:', aiErr?.message || aiErr);
+        await ServerAIUsageService.refundAction(uid, 'chat', rateCheck.reservationId);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.AI_UNAVAILABLE,
+            message: 'Tive uma breve oscilação de conexão, por favor tente novamente.',
+          },
+        });
+      }
 
       const now = DateService.getLocalDateTime();
       const userMsgId = 'msg_user_' + Date.now();
@@ -1107,12 +1125,15 @@ app.post(
         }
       }
 
-      return res.json({
+      const responsePayload = {
         success: true,
         reply,
         userMessageId: userMsgId,
         caluMessageId: caluMsgId,
-      });
+      };
+
+      saveIdempotency(req, responsePayload);
+      return res.json(responsePayload);
     } catch (error: any) {
       console.error('[API /chat-calu] Erro');
       return res.status(500).json({
@@ -1120,6 +1141,59 @@ app.post(
         error: {
           code: ERROR_CODES.AI_UNAVAILABLE,
           message: 'Tive uma breve oscilação de conexão, por favor tente novamente.',
+        },
+      });
+    }
+  }
+);
+
+// Meal Sync Endpoint with Idempotency Support (Phase 7 Hardening)
+app.post(
+  '/api/meals',
+  requireAuth,
+  publicRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (checkIdempotency(req, res)) return;
+
+      const uid = req.user!.uid;
+      const meal = req.body;
+      if (!meal || !meal.id || typeof meal.id !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: ERROR_CODES.INVALID_INPUT,
+            message: 'Identificador ou dados da refeição inválidos.',
+          },
+        });
+      }
+
+      if (isFirebaseAdminReady()) {
+        const db = getAdminDb();
+        await db.doc(`users/${uid}/meals/${meal.id}`).set(
+          {
+            ...meal,
+            uid,
+            updatedAt: DateService.getLocalDateTime(),
+          },
+          { merge: true }
+        );
+      }
+
+      const responsePayload = {
+        success: true,
+        mealId: meal.id,
+      };
+
+      saveIdempotency(req, responsePayload);
+      return res.json(responsePayload);
+    } catch (err: any) {
+      console.error('[API /api/meals] Erro ao salvar refeição:', err.message);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: ERROR_CODES.DATABASE_UNAVAILABLE,
+          message: 'Falha ao sincronizar refeição no servidor.',
         },
       });
     }
@@ -1331,6 +1405,8 @@ async function startServer() {
   });
 }
 
-startServer().catch(err => {
-  console.error('Falha crítica ao iniciar servidor:', err);
-});
+if (!process.argv[1]?.includes('runTests')) {
+  startServer().catch(err => {
+    console.error('Falha crítica ao iniciar servidor:', err);
+  });
+}

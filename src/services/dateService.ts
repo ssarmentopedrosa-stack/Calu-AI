@@ -1,19 +1,51 @@
 import { BRAZILIAN_TIMEZONE } from '../config/constants';
 
 /**
- * DateService strictly operates in America/Sao_Paulo timezone,
- * preventing UTC day shifts (e.g. evening meals at 22h being logged into the next day).
+ * DateService strictly operates in the device's timezone (defaulting to America/Sao_Paulo),
+ * NEVER defaulting to UTC.
+ * Prevents UTC day shifts (e.g. evening meals at 22h being logged into the next calendar day).
  * Works identically in Node.js server environments and client browsers.
  */
 export class DateService {
-  private static readonly TIMEZONE = BRAZILIAN_TIMEZONE || 'America/Sao_Paulo';
+  private static testTimezoneOverride: string | null = null;
 
   /**
-   * Returns YYYY-MM-DD in America/Sao_Paulo timezone
+   * For automated testing: allows mocking or overriding active timezone
+   */
+  static setTimezoneForTesting(tz: string | null): void {
+    this.testTimezoneOverride = tz;
+  }
+
+  /**
+   * Resolves the device's local timezone (e.g. from Intl API).
+   * If the device reports UTC or timezone is unavailable, strictly defaults to America/Sao_Paulo.
+   */
+  static getEffectiveTimezone(): string {
+    if (this.testTimezoneOverride) {
+      return this.testTimezoneOverride;
+    }
+
+    try {
+      if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+        const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (deviceTz && deviceTz !== 'UTC' && deviceTz.trim().length > 0) {
+          return deviceTz;
+        }
+      }
+    } catch {
+      // Fallback to Brazilian default
+    }
+
+    return BRAZILIAN_TIMEZONE || 'America/Sao_Paulo';
+  }
+
+  /**
+   * Returns YYYY-MM-DD in the device's timezone (default America/Sao_Paulo), never UTC.
    */
   static getLocalDate(date: Date = new Date()): string {
+    const tz = this.getEffectiveTimezone();
     const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: this.TIMEZONE,
+      timeZone: tz,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -22,11 +54,12 @@ export class DateService {
   }
 
   /**
-   * Returns HH:mm in America/Sao_Paulo timezone
+   * Returns HH:mm in the device's timezone (default America/Sao_Paulo)
    */
   static getLocalTime(date: Date = new Date()): string {
+    const tz = this.getEffectiveTimezone();
     const formatter = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: this.TIMEZONE,
+      timeZone: tz,
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
@@ -35,7 +68,7 @@ export class DateService {
   }
 
   /**
-   * Returns ISO local timestamp representation (YYYY-MM-DDTHH:mm:ss) in America/Sao_Paulo
+   * Returns ISO local timestamp representation (YYYY-MM-DDTHH:mm:ss) in device timezone
    */
   static getLocalDateTime(date: Date = new Date()): string {
     const datePart = this.getLocalDate(date);
@@ -45,7 +78,7 @@ export class DateService {
   }
 
   /**
-   * Checks if a given YYYY-MM-DD string is today in America/Sao_Paulo
+   * Checks if a given YYYY-MM-DD string is today in the device's timezone
    */
   static isToday(dateStr: string): boolean {
     return dateStr === this.getLocalDate();
@@ -69,7 +102,7 @@ export class DateService {
     // Use noon to avoid any boundary issues
     const d = new Date(year, month - 1, day, 12, 0, 0);
     return d.toLocaleDateString('pt-BR', {
-      timeZone: this.TIMEZONE,
+      timeZone: this.getEffectiveTimezone(),
       weekday: 'short',
       day: 'numeric',
       month: 'short',
@@ -77,15 +110,15 @@ export class DateService {
   }
 
   /**
-   * Returns Start of Local Day (00:00:00) in America/Sao_Paulo
+   * Returns Start of Local Day (00:00:00)
    */
   static startOfLocalDay(dateStr: string): Date {
     const [year, month, day] = dateStr.split('-').map(Number);
-    return new Date(Date.UTC(year, month - 1, day, 3, 0, 0)); // UTC-3 midnight
+    return new Date(Date.UTC(year, month - 1, day, 3, 0, 0)); // UTC-3 midnight equivalent
   }
 
   /**
-   * Returns End of Local Day (23:59:59.999) in America/Sao_Paulo
+   * Returns End of Local Day (23:59:59.999)
    */
   static endOfLocalDay(dateStr: string): Date {
     const [year, month, day] = dateStr.split('-').map(Number);

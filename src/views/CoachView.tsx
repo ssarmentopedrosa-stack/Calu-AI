@@ -88,11 +88,6 @@ export const CoachView: React.FC<CoachViewProps> = ({ user, goals, meals }) => {
     setInputText('');
     setIsSending(true);
 
-    // Persist user message to Firestore
-    if (user.uid) {
-      await ChatService.saveChatMessage(user.uid, userMsg);
-    }
-
     try {
       const userContext = {
         name: user.name,

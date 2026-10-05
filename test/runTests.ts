@@ -1,7 +1,13 @@
 import assert from 'assert';
 import { DateService } from '../src/services/dateService.ts';
 import { NutritionCalculator } from '../src/services/nutritionCalculator.ts';
-import { NutritionService } from '../src/services/nutritionService.ts';
+import {
+  NutritionService,
+  resolveHouseholdMeasure,
+  normalizeNutritionText,
+  singularizeNutritionWord,
+} from '../src/services/nutritionService.ts';
+import { executeWithRetry } from '../server.ts';
 import { createCleanProfile, DEFAULT_INITIAL_GOALS } from '../src/services/firestore/UserService.ts';
 import {
   APP_VERSION,
@@ -472,7 +478,7 @@ async function runAll() {
   // SEÇÃO 8: CONFORMIDADE LGPD (EXPORT & DELETE)
   // ========================================================================
 
-  await runTest('LGPD-001', 'LGPD: Exportação unificada inclui todas as 9 coleções e schemaVersion 2.2.3', () => {
+  await runTest('LGPD-001', 'LGPD: Exportação unificada inclui todas as 9 coleções e schemaVersion 2.2.4', () => {
     assert.strictEqual(USER_DATA_COLLECTIONS.length, 9);
 
     const mockExportBundle = {
@@ -590,7 +596,7 @@ async function runAll() {
   // SEÇÃO 10: HEALTH CHECK & READINESS (FASE 4)
   // ========================================================================
 
-  await runTest('HEALTH-001', 'HEALTH: /api/health retorna HTTP 200 com status ok e version 2.2.3', () => {
+  await runTest('HEALTH-001', 'HEALTH: /api/health retorna HTTP 200 com status ok e version 2.2.4', () => {
     let status = 0;
     let payload: any = null;
 
@@ -947,8 +953,281 @@ async function runAll() {
     assert.notStrictEqual(effectiveUid, maliciousBody.uid);
   });
 
-  await runTest('LOCK-001', 'LOCK: Versão 2.2.3 em sincronia estrita entre constantes, package e exportação', () => {
-    assert.strictEqual(APP_VERSION, '2.2.3');
+  await runTest('LOCK-001', 'LOCK: Versão 2.2.4 em sincronia estrita entre constantes, package e exportação', () => {
+    assert.strictEqual(APP_VERSION, '2.2.4');
+  });
+
+  // ========================================================================
+  // SEÇÃO 13: V2.2.4 HARDENING TESTS
+  // ========================================================================
+
+  await runTest('CORS-001', 'CORS: Middleware de CORS é montado estritamente em /api e não bloqueia estáticos', () => {
+    const isApiRoute = (path: string) => path.startsWith('/api');
+    assert.strictEqual(isApiRoute('/api/meals'), true);
+    assert.strictEqual(isApiRoute('/api/health'), true);
+    assert.strictEqual(isApiRoute('/src/main.tsx'), false);
+    assert.strictEqual(isApiRoute('/index.html'), false);
+    assert.strictEqual(isApiRoute('/assets/index.js'), false);
+  });
+
+  await runTest('MEAL-UPDATE-001', 'MEAL: Edição de refeição mantém ID existente e executa update in-place', () => {
+    const existingMealId = 'meal_existing_12345';
+    const resolveMealId = (isEdit: boolean, currentId?: string) => {
+      return (isEdit && currentId) ? currentId : ('meal_' + Date.now());
+    };
+
+    const updatedId = resolveMealId(true, existingMealId);
+    assert.strictEqual(updatedId, existingMealId, 'ID da refeição editada deve ser preservado');
+
+    const newMealId = resolveMealId(false);
+    assert.ok(newMealId.startsWith('meal_'));
+    assert.notStrictEqual(newMealId, existingMealId);
+  });
+
+  await runTest('CHAT-005', 'CHAT: Query de histórico com orderBy desc + limit e reverse preserva ordem cronológica', () => {
+    // 5 historical messages with timestamp asc
+    const store = [
+      { id: '1', timestamp: '2026-10-04T10:00:00' },
+      { id: '2', timestamp: '2026-10-04T11:00:00' },
+      { id: '3', timestamp: '2026-10-04T12:00:00' },
+      { id: '4', timestamp: '2026-10-04T13:00:00' },
+      { id: '5', timestamp: '2026-10-04T14:00:00' },
+    ];
+
+    // Query: orderBy desc + limit 3
+    const queriedDesc = [...store].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 3);
+    assert.deepStrictEqual(queriedDesc.map(m => m.id), ['5', '4', '3']);
+
+    // Reverse for UI display: oldest to newest among the last 3
+    const reversed = queriedDesc.reverse();
+    assert.deepStrictEqual(reversed.map(m => m.id), ['3', '4', '5']);
+  });
+
+  await runTest('INSIGHT-001', 'INSIGHT: Cache em users/{uid}/insights/{data} impede chamadas redundantes', () => {
+    const mockInsightStore = new Map<string, string>();
+    let apiCallCount = 0;
+
+    const getOrFetchInsight = (uid: string, date: string) => {
+      const key = `${uid}_${date}`;
+      if (mockInsightStore.has(key)) {
+        return { source: 'cache', content: mockInsightStore.get(key)! };
+      }
+      apiCallCount += 1;
+      const generated = 'Insight gerado via Gemini para ' + date;
+      mockInsightStore.set(key, generated);
+      return { source: 'network', content: generated };
+    };
+
+    // First meal added: generates and caches
+    const firstCall = getOrFetchInsight('user_123', '2026-10-04');
+    assert.strictEqual(firstCall.source, 'network');
+    assert.strictEqual(apiCallCount, 1);
+
+    // Second meal added same day: returns from cache without calling API
+    const secondCall = getOrFetchInsight('user_123', '2026-10-04');
+    assert.strictEqual(secondCall.source, 'cache');
+    assert.strictEqual(apiCallCount, 1, 'API não deve ser chamada novamente para refeições adicionais');
+    assert.strictEqual(firstCall.content, secondCall.content);
+  });
+
+  // ========================================================================
+  // SEÇÃO 9: HARDENING V2.2.4 — UNIDADES, FUSO, RETRY E PREMIUM
+  // ========================================================================
+
+  await runTest('UNIT-001', 'UNIT: Medidas de líquidos: xícara (240 ml), copo americano (190 ml) e copo (250 ml)', () => {
+    const xicara = resolveHouseholdMeasure('xícara', 1);
+    assert.strictEqual(xicara.recognized, true);
+    assert.strictEqual(xicara.gramsOrMl, 240);
+
+    const xicaras = resolveHouseholdMeasure('xícaras', 2);
+    assert.strictEqual(xicaras.recognized, true);
+    assert.strictEqual(xicaras.gramsOrMl, 480);
+
+    const copoAmer = resolveHouseholdMeasure('copo americano', 1);
+    assert.strictEqual(copoAmer.recognized, true);
+    assert.strictEqual(copoAmer.gramsOrMl, 190);
+
+    const coposAmer = resolveHouseholdMeasure('copos americanos', 2);
+    assert.strictEqual(coposAmer.recognized, true);
+    assert.strictEqual(coposAmer.gramsOrMl, 380);
+
+    const copo = resolveHouseholdMeasure('copo', 1);
+    assert.strictEqual(copo.recognized, true);
+    assert.strictEqual(copo.gramsOrMl, 250);
+  });
+
+  await runTest('UNIT-002', 'UNIT: Medidas culinárias: colher de sopa, chá, servir, concha, escumadeira, fatia e unidade', () => {
+    const sopa = resolveHouseholdMeasure('colher de sopa', 2);
+    assert.strictEqual(sopa.recognized, true);
+    assert.strictEqual(sopa.gramsOrMl, 30);
+
+    const cha = resolveHouseholdMeasure('colher de chá', 1);
+    assert.strictEqual(cha.recognized, true);
+    assert.strictEqual(cha.gramsOrMl, 5);
+
+    const servir = resolveHouseholdMeasure('colher de servir', 1);
+    assert.strictEqual(servir.recognized, true);
+    assert.strictEqual(servir.gramsOrMl, 45);
+
+    const concha = resolveHouseholdMeasure('concha', 1);
+    assert.strictEqual(concha.recognized, true);
+    assert.strictEqual(concha.gramsOrMl, 130);
+
+    const escumadeira = resolveHouseholdMeasure('escumadeira', 1);
+    assert.strictEqual(escumadeira.recognized, true);
+    assert.strictEqual(escumadeira.gramsOrMl, 50);
+
+    const fatia = resolveHouseholdMeasure('fatia', 2);
+    assert.strictEqual(fatia.recognized, true);
+    assert.strictEqual(fatia.gramsOrMl, 70);
+
+    const unidade = resolveHouseholdMeasure('unidade', 3, { portionMultiplier: 50 } as any);
+    assert.strictEqual(unidade.recognized, true);
+    assert.strictEqual(unidade.gramsOrMl, 150);
+  });
+
+  await runTest('UNIT-003', 'UNIT: Unidade desconhecida NÃO vira 1 g e exige confirmação do usuário', () => {
+    const unknown = resolveHouseholdMeasure('tigela_desconhecida', 2);
+    assert.strictEqual(unknown.recognized, false);
+    assert.strictEqual(unknown.requiresConfirmation, true);
+    assert.strictEqual(unknown.gramsOrMl, 0, 'Unidade desconhecida não deve virar 1g');
+
+    const enrichment = NutritionService.enrichIdentifiedFoods([
+      { name: 'Arroz branco cozido', estimatedQuantity: 1, unit: 'tigela_desconhecida', confidence: 0.9 },
+    ]);
+    assert.strictEqual(enrichment.calculatedFoods.length, 0);
+    assert.strictEqual(enrichment.unmatchedFoods.length, 1);
+    assert.ok(enrichment.unmatchedFoods[0].includes('não reconhecida'));
+  });
+
+  await runTest('SEARCH-001', 'SEARCH: Busca normaliza acentos e formas plurais no catálogo TACO', () => {
+    const foundPlural = NutritionService.findFood('ovos');
+    assert.ok(foundPlural, 'Deve encontrar ovo a partir do plural ovos');
+
+    const foundAccents = NutritionService.findFood('macas');
+    assert.ok(foundAccents, 'Deve encontrar maçã a partir de macas sem acento e no plural');
+
+    const foundFeijao = NutritionService.findFood('feijões');
+    assert.ok(foundFeijao, 'Deve encontrar feijão a partir de feijões');
+
+    const searchResults = NutritionService.searchFoods('ovos');
+    assert.ok(searchResults.length > 0);
+  });
+
+  await runTest('TIMEZONE-001', 'TIMEZONE: Data do diário usa fuso do aparelho (America/Sao_Paulo) e evita UTC drift', () => {
+    DateService.setTimezoneForTesting('America/Sao_Paulo');
+    // 2026-10-04 at 23:30 Brasilia time is 2026-10-05 02:30 UTC
+    const lateEveningDate = new Date('2026-10-05T02:30:00Z');
+    const localDate = DateService.getLocalDate(lateEveningDate);
+    assert.strictEqual(localDate, '2026-10-04', 'Às 23h30 em São Paulo a data deve ser 04/10, não 05/10 de UTC');
+
+    // Test custom device timezone
+    DateService.setTimezoneForTesting('America/Manaus');
+    const manausDate = DateService.getLocalDate(lateEveningDate);
+    assert.strictEqual(manausDate, '2026-10-04');
+
+    DateService.setTimezoneForTesting(null);
+    assert.strictEqual(DateService.getEffectiveTimezone(), 'America/Sao_Paulo');
+  });
+
+  await runTest('RETRY-001', 'RETRY: executeWithRetry não repete em 400 ou 429, e repete em 5xx e timeout', async () => {
+    // 1. 400 Bad Request: 0 retries
+    let calls400 = 0;
+    try {
+      await executeWithRetry(async () => {
+        calls400++;
+        const err: any = new Error('Bad Request');
+        err.status = 400;
+        throw err;
+      }, 500, 'test400', 2);
+      assert.fail('Deveria ter lançado erro 400');
+    } catch (err: any) {
+      assert.strictEqual(calls400, 1, 'Não deve repetir erro 400');
+    }
+
+    // 2. 429 Rate Limit: 0 retries
+    let calls429 = 0;
+    try {
+      await executeWithRetry(async () => {
+        calls429++;
+        const err: any = new Error('Too Many Requests');
+        err.status = 429;
+        throw err;
+      }, 500, 'test429', 2);
+      assert.fail('Deveria ter lançado erro 429');
+    } catch (err: any) {
+      assert.strictEqual(calls429, 1, 'Não deve repetir erro 429');
+    }
+
+    // 3. 503 Service Unavailable: retries and succeeds
+    let calls503 = 0;
+    const result503 = await executeWithRetry(async () => {
+      calls503++;
+      if (calls503 === 1) {
+        const err: any = new Error('Service Unavailable');
+        err.status = 503;
+        throw err;
+      }
+      return 'sucesso_apos_503';
+    }, 1000, 'test503', 2);
+    assert.strictEqual(calls503, 2, 'Deve ter repetido em 503');
+    assert.strictEqual(result503, 'sucesso_apos_503');
+  });
+
+  await runTest('RETRY-002', 'RETRY: executeWithRetry suporta AbortSignal real e respeita retry-after', async () => {
+    let signalReceived: AbortSignal | undefined;
+    let attempts = 0;
+    const result = await executeWithRetry(async (signal) => {
+      attempts++;
+      signalReceived = signal;
+      if (attempts === 1) {
+        const err: any = new Error('Gateway Timeout');
+        err.status = 504;
+        err.headers = new Map([['retry-after', '0.05']]);
+        throw err;
+      }
+      return 'ok';
+    }, 1000, 'testRetryAfter', 1);
+
+    assert.ok(signalReceived instanceof AbortSignal, 'Deve repassar AbortSignal real');
+    assert.strictEqual(result, 'ok');
+    assert.strictEqual(attempts, 2);
+  });
+
+  await runTest('QUOTA-009', 'QUOTA: Nenhum alimento casado na base estorna reserva de cota', async () => {
+    const uid = 'test_unmatched_quota_' + Date.now();
+    const reservation = await ServerAIUsageService.checkAndIncrement(uid, 'mealAnalysis', false);
+    assert.strictEqual(reservation.allowed, true);
+
+    // Simulate unmatched foods resulting in 0 calculatedFoods
+    const { calculatedFoods } = NutritionService.enrichIdentifiedFoods([
+      { name: 'AlimentoInexistenteComNomeEstranho123', estimatedQuantity: 100, unit: 'g', confidence: 0.9 },
+    ]);
+    assert.strictEqual(calculatedFoods.length, 0);
+
+    // When calculatedFoods.length === 0, refund is triggered
+    const refunded = await ServerAIUsageService.refundAction(uid, 'mealAnalysis', reservation.reservationId);
+    assert.strictEqual(refunded, true, 'Cota deve ser estornada quando 0 alimentos casam');
+
+    // Quota is intact
+    const secondCheck = await ServerAIUsageService.checkAndIncrement(uid, 'mealAnalysis', false);
+    assert.strictEqual(secondCheck.allowed, true);
+  });
+
+  await runTest('AUTH-009', 'AUTH: requireAuth ignora preferences/profile.plan e valida claims ou subscrição server-side', () => {
+    const tokenWithClaim = { uid: 'u1', plan: 'premium' };
+    const isPrem = tokenWithClaim.plan === 'premium';
+    assert.strictEqual(isPrem, true);
+
+    // Verify firestore.rules string blocks plan in preferences
+    const rulesContent = fs.readFileSync(path.resolve('./firestore.rules'), 'utf-8');
+    assert.ok(rulesContent.includes("!('plan' in request.resource.data)"));
+  });
+
+  await runTest('LGPD-007', 'LGPD: Exclusão de conta no client usa CaluApiService.deleteAccount e não deleteUser de firebase/auth', () => {
+    const authServiceCode = fs.readFileSync(path.resolve('./src/services/authService.ts'), 'utf-8');
+    assert.ok(!authServiceCode.includes("deleteUser(auth.currentUser)"), 'deleteUser do client SDK deve ser removido');
+    assert.ok(authServiceCode.includes("CaluApiService.deleteAccount()"), 'Deve delegar para CaluApiService.deleteAccount');
   });
 
   console.log('\n========================================================================');

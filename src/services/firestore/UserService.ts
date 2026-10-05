@@ -62,7 +62,9 @@ export class UserService {
     if (isFirebaseConfigured) {
       const path = `users/${profile.uid}/preferences/profile`;
       try {
-        await setDoc(doc(db, 'users', profile.uid, 'preferences', 'profile'), updated, { merge: true });
+        // Strip protected 'plan' field: plan is strictly server-authoritative
+        const { plan: _ignoredPlan, ...safeProfile } = updated;
+        await setDoc(doc(db, 'users', profile.uid, 'preferences', 'profile'), safeProfile, { merge: true });
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, path);
       }

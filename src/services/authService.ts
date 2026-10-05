@@ -4,7 +4,6 @@ import {
   createUserWithEmailAndPassword,
   signOut as fbSignOut,
   onAuthStateChanged,
-  deleteUser,
   updateProfile,
   sendPasswordResetEmail,
 } from 'firebase/auth';
@@ -250,24 +249,11 @@ export class AuthService {
   }
 
   static async deleteAccount(): Promise<void> {
-    // Also trigger server-side cascade
-    const token = await this.getIdToken();
-    if (token) {
-      try {
-        await fetch('/api/user/delete-account', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        });
-      } catch (err: any) {
-        console.warn('Erro na exclusão server-side:', err.message);
-      }
-    }
+    const { CaluApiService } = await import('./api');
+    await CaluApiService.deleteAccount();
 
     if (isFirebaseConfigured && auth.currentUser) {
-      await deleteUser(auth.currentUser);
+      await fbSignOut(auth).catch(() => {});
     }
 
     this.currentUser = null;

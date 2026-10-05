@@ -88,19 +88,31 @@ export async function requireAuth(
       return;
     }
 
-    // Determine user plan strictly on the server from Firestore (Anti-bypass)
+    // Secure plan verification (Anti-bypass):
+    // Plan comes strictly from custom claims or a server-only subscription document.
+    // requireAuth.ts NEVER trusts preferences/profile.plan.
     let isPremium = false;
-    try {
-      const db = getAdminDb();
-      const profileSnap = await db.doc(`users/${decodedToken.uid}/preferences/profile`).get();
-      if (profileSnap.exists) {
-        const data = profileSnap.data();
-        isPremium = data?.plan === 'premium';
+    if (
+      decodedToken.plan === 'premium' ||
+      decodedToken.premium === true ||
+      decodedToken.isPremium === true
+    ) {
+      isPremium = true;
+    } else {
+      try {
+        const db = getAdminDb();
+        const subSnap = await db.doc(`users/${decodedToken.uid}/subscription/status`).get();
+        if (subSnap.exists) {
+          const subData = subSnap.data();
+          isPremium =
+            subData?.plan === 'premium' ||
+            subData?.isPremium === true ||
+            subData?.status === 'active';
+        }
+      } catch (dbErr: any) {
+        console.warn('[requireAuth] Não foi possível verificar subscrição server-side:', dbErr.message);
+        isPremium = false;
       }
-    } catch (dbErr: any) {
-      // In case of transient DB read error, default safely to isPremium = false
-      console.warn('[requireAuth] Não foi possível verificar plano no Firestore:', dbErr.message);
-      isPremium = false;
     }
 
     req.user = {

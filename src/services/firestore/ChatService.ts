@@ -17,10 +17,12 @@ export class ChatService {
       const path = `users/${uid}/chatMessages`;
       try {
         const chatRef = collection(db, 'users', uid, 'chatMessages');
-        const q = query(chatRef, orderBy('timestamp', 'asc'), limit(limitCount));
+        const q = query(chatRef, orderBy('timestamp', 'desc'), limit(limitCount));
         const snap = await getDocs(q);
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => list.push(docSnap.data() as ChatMessage));
+        // Reverse array to display oldest to newest in UI
+        list.reverse();
         if (list.length > 0) return list;
       } catch (err) {
         handleFirestoreError(err, OperationType.LIST, path);

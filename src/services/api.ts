@@ -25,16 +25,25 @@ export class CaluApiService {
       if (!res.ok) throw new Error('Health check failed');
       return await res.json();
     } catch {
-      return { status: 'offline', version: '2.2.3' };
+      return { status: 'offline', version: '2.2.4' };
     }
+  }
+
+  static generateIdempotencyKey(): string {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `idem_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
   }
 
   static async analyzePhoto(
     imageBase64: string,
     mimeType = 'image/jpeg',
-    userNotes?: string
+    userNotes?: string,
+    idempotencyKey?: string
   ): Promise<MealAnalysisResponse> {
     const headers = await this.getAuthHeaders();
+    headers['X-Idempotency-Key'] = idempotencyKey || this.generateIdempotencyKey();
     const res = await fetch('/api/analyze-meal-photo', {
       method: 'POST',
       headers,
@@ -53,8 +62,13 @@ export class CaluApiService {
     return data;
   }
 
-  static async analyzeText(text: string, userNotes?: string): Promise<MealAnalysisResponse> {
+  static async analyzeText(
+    text: string,
+    userNotes?: string,
+    idempotencyKey?: string
+  ): Promise<MealAnalysisResponse> {
     const headers = await this.getAuthHeaders();
+    headers['X-Idempotency-Key'] = idempotencyKey || this.generateIdempotencyKey();
     const res = await fetch('/api/analyze-meal-text', {
       method: 'POST',
       headers,
@@ -76,10 +90,12 @@ export class CaluApiService {
   static async getDailyInsight(
     _meals?: Meal[],
     _targets?: NutritionGoals,
-    _habits?: HabitState
+    _habits?: HabitState,
+    idempotencyKey?: string
   ): Promise<string> {
     try {
       const headers = await this.getAuthHeaders();
+      headers['X-Idempotency-Key'] = idempotencyKey || this.generateIdempotencyKey();
       const res = await fetch('/api/daily-insight', {
         method: 'POST',
         headers,
@@ -95,10 +111,12 @@ export class CaluApiService {
 
   static async chatWithCalu(
     messages: ChatMessage[],
-    _clientContext?: any
+    _clientContext?: any,
+    idempotencyKey?: string
   ): Promise<string> {
     try {
       const headers = await this.getAuthHeaders();
+      headers['X-Idempotency-Key'] = idempotencyKey || this.generateIdempotencyKey();
       const lastUserMsg = [...messages].reverse().find(m => m.sender === 'user')?.text || '';
       const res = await fetch('/api/chat-calu', {
         method: 'POST',
@@ -119,6 +137,24 @@ export class CaluApiService {
     } catch {
       return 'Tive uma breve oscilação de conexão, por favor tente enviar sua mensagem novamente.';
     }
+  }
+
+  static async saveMeal(
+    meal: Meal,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; mealId: string }> {
+    const headers = await this.getAuthHeaders();
+    headers['X-Idempotency-Key'] = idempotencyKey || this.generateIdempotencyKey();
+    const res = await fetch('/api/meals', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(meal),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error?.message || 'Falha ao sincronizar refeição no servidor.');
+    }
+    return await res.json();
   }
 
   static async lookupBarcode(barcode: string): Promise<any> {

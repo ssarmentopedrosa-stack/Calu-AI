@@ -11,6 +11,7 @@ import { AuthService } from './authService';
 import { repository, DEFAULT_INITIAL_GOALS, createCleanProfile, DEFAULT_CLEAN_HABITS } from '../repositories/dataRepository';
 import { ChatService } from './firestore/ChatService';
 import { DateService } from './dateService';
+import { CaluApiService } from './api';
 
 export { DEFAULT_INITIAL_GOALS, createCleanProfile, DEFAULT_CLEAN_HABITS };
 
@@ -71,13 +72,15 @@ export class StorageService {
     return await repository.getAllMeals(uid, limitCount);
   }
 
-  static async saveMeal(meal: Meal): Promise<void> {
+  static async saveMeal(meal: Meal, idempotencyKey?: string): Promise<void> {
     const uid = this.getActiveUid();
     const mealWithUid = {
       ...meal,
       uid: meal.uid || uid,
     };
     await repository.saveMeal(mealWithUid);
+    // Send X-Idempotency-Key to backend API
+    CaluApiService.saveMeal(mealWithUid, idempotencyKey).catch(() => {});
   }
 
   static async deleteMeal(id: string): Promise<void> {

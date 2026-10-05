@@ -8,6 +8,7 @@ import { DateService } from '../services/dateService';
 interface HumanCorrectionModalProps {
   initialData: MealAnalysisSuccessResponse;
   photoUrl?: string;
+  mealId?: string;
   uid: string;
   onSave: (meal: Meal) => void;
   onClose: () => void;
@@ -26,6 +27,7 @@ const COMMON_UNITS = ['g', 'ml', 'unidade', 'fatia', 'colher de sopa', 'concha',
 export const HumanCorrectionModal: React.FC<HumanCorrectionModalProps> = ({
   initialData,
   photoUrl,
+  mealId,
   uid,
   onSave,
   onClose,
@@ -140,7 +142,7 @@ export const HumanCorrectionModal: React.FC<HumanCorrectionModalProps> = ({
     }
 
     const meal: Meal = {
-      id: 'meal_' + Date.now(),
+      id: mealId || ('meal_' + Date.now()),
       uid,
       name: mealName.trim() || 'Refeição Registrada',
       mealType,

@@ -36,6 +36,8 @@ export default function App() {
 
   // User & Goals State
   const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(() => AuthService.getCurrentUser());
+  const [authResolved, setAuthResolved] = useState(false);
+  const [activeUid, setActiveUid] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile>(() => createCleanProfile(currentUser?.uid || 'anonimo', currentUser?.displayName || 'Usuário'));
   const [goals, setGoals] = useState<NutritionGoals>(DEFAULT_INITIAL_GOALS);
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
@@ -63,6 +65,7 @@ export default function App() {
   const [correctionData, setCorrectionData] = useState<{
     data: MealAnalysisSuccessResponse;
     photoUrl?: string;
+    mealId?: string;
   } | null>(null);
 
   // Load all user data from Firestore
@@ -109,6 +112,9 @@ export default function App() {
     AuthService.init();
     const unsub = AuthService.onAuthStateChanged(authUser => {
       setCurrentUser(authUser);
+      const newUid = authUser?.uid || null;
+      setActiveUid(newUid);
+      setAuthResolved(true);
       if (authUser) {
         loadUserData(authUser.uid);
       } else {
@@ -122,10 +128,11 @@ export default function App() {
     return unsub;
   }, [loadUserData]);
 
-  // Refresh daily state when selected date changes
+  // Only load daily data after auth has resolved AND reload whenever activeUid or selectedDate changes
   useEffect(() => {
+    if (!authResolved) return;
     loadDailyData(selectedDate);
-  }, [selectedDate, loadDailyData]);
+  }, [authResolved, activeUid, selectedDate, loadDailyData]);
 
   // Water handler
   const handleAddWater = async (delta: number) => {
@@ -209,6 +216,7 @@ export default function App() {
         uncertainties: meal.uncertainties || [],
       },
       photoUrl: meal.photoUrl,
+      mealId: meal.id,
     });
   };
 
@@ -308,8 +316,18 @@ export default function App() {
     setWeights([]);
   };
 
+  // Do not show onboarding while auth is still resolving or data is loading
+  if (!authResolved || loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 p-4">
+        <div className="w-10 h-10 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm font-medium text-slate-300">Carregando CALU AI...</p>
+      </div>
+    );
+  }
+
   // Show onboarding if user profile onboarding is not yet completed
-  if (!user.onboardingCompleted && !loading) {
+  if (!user.onboardingCompleted) {
     return <OnboardingView onComplete={handleOnboardingComplete} />;
   }
 
@@ -434,6 +452,7 @@ export default function App() {
         <HumanCorrectionModal
           initialData={correctionData.data}
           photoUrl={correctionData.photoUrl}
+          mealId={correctionData.mealId}
           uid={user.uid}
           onSave={handleSaveMeal}
           onClose={() => setCorrectionData(null)}
